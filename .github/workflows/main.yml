@@ -17,9 +17,15 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Find and build APK
+      - name: Generate Gradle Wrapper if missing
         run: |
-          # Tìm xem file gradlew nằm ở thư mục gốc hay trong thư mục con android
+          if [ ! -f "./gradlew" ] && [ ! -f "android/gradlew" ]; then
+            echo "Đang tạo Gradle wrapper tự động..."
+            gradle wrapper
+          fi
+
+      - name: Build Debug APK
+        run: |
           if [ -f "./gradlew" ]; then
             chmod +x gradlew
             ./gradlew assembleDebug
@@ -28,10 +34,8 @@ jobs:
             chmod +x gradlew
             ./gradlew assembleDebug
           else
-            # Nếu không có gradlew, dùng lệnh gradle trực tiếp nếu cài sẵn
-            echo "Không tìm thấy gradlew, thử tìm build files..."
-            find . -name "build.gradle"
-            exit 1
+            # Nếu vẫn không có, dùng lệnh gradle cài sẵn trên máy chủ
+            gradle assembleDebug
           fi
 
       - name: Upload APK Artifact
