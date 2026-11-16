@@ -12,40 +12,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - name: Create google-services.json safely
-        run: |
-          mkdir -p app
-          if [ ! -f "app/google-services.json" ]; then
-            echo '{
-              "project_info": {
-                "project_number": "123456789",
-                "project_id": "musicplayer-temp",
-                "storage_bucket": "musicplayer-temp.appspot.com"
-              },
-              "client": [
-                {
-                  "client_info": {
-                    "mobilesdk_app_id": "1:123456789:android:123456789abcdef",
-                    "android_client_info": {
-                      "package_name": "com.example.audio"
-                    }
-                  },
-                  "oauth_client": [],
-                  "services": {
-                    "analytics_service": { "status": "1" },
-                    "app_invite_service": { "status": "1" },
-                    "ads_service": { "status": "1" }
-                  }
-                }
-              ],
-              "api_version": "1"
-            }' > app/google-services.json
-          fi
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
