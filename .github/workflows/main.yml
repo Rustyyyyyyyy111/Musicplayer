@@ -17,30 +17,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generate Gradle Wrapper if missing
+      - name: Create missing google-services.json if needed
         run: |
-          if [ ! -f "./gradlew" ] && [ ! -f "android/gradlew" ]; then
-            echo "Đang tạo Gradle wrapper tự động..."
-            gradle wrapper
+          if [ ! -f "app/google-services.json" ]; then
+            echo "Tạo file google-services.json tạm thời..."
+            echo '{"project_info": {"project_number": "123456789","project_id": "musicplayer-temp","storage_bucket": "musicplayer-temp.appspot.com"},"client": [{"client_info": {"mobilesdk_app_id": "1:123456789:android:123456789abcdef","android_client_info": {"package_name": "com.example.audio"}},"oauth_client": [],"services": {"analytics_service": {"status": "1"},"app_invite_service": {"status": "1"},"ads_service": {"status": "1"}}}],"api_version": "1"}' > app/google-services.json
           fi
 
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
       - name: Build Debug APK
-        run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x gradlew
-            ./gradlew assembleDebug
-          elif [ -f "android/gradlew" ]; then
-            cd android
-            chmod +x gradlew
-            ./gradlew assembleDebug
-          else
-            # Nếu vẫn không có, dùng lệnh gradle cài sẵn trên máy chủ
-            gradle assembleDebug
-          fi
+        run: ./gradlew assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: |
-            **/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
