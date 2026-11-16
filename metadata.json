@@ -1,0 +1,6 @@
+{
+  "name": "Music Player",
+  "description": "Trình phát nhạc cá nhân mang thiết kế Apple Music với nguồn Telegram TDLib (hỗ trợ Forum Topics), YouTube Music, nhạc Offline, Equalizer 10 băng tần, Crossfade, Lyrics đồng bộ và Android Auto.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

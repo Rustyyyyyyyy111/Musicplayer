@@ -1,0 +1,541 @@
+package com.example.ui.components
+
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import com.example.R
+import com.example.core.model.DownloadStatus
+import com.example.core.model.MusicSource
+import com.example.core.model.ThemeMode
+import com.example.core.model.Track
+import com.example.ui.theme.LiquidGlassBase
+import com.example.ui.theme.LocalLiquidGlassPalette
+import com.example.ui.theme.LocalMusicPlayerColors
+
+@Composable
+fun AppleMusicSurfaceBackground(
+    artworkUri: String?,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val colors = LocalMusicPlayerColors.current
+    val palette = LocalLiquidGlassPalette.current
+
+    Box(modifier = modifier.fillMaxSize()) {
+        if (colors.themeMode == ThemeMode.LIQUID_GLASS) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(LiquidGlassBase)
+            )
+            if (!artworkUri.isNullOrBlank()) {
+                AsyncImage(
+                    model = artworkUri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(48.dp)
+                )
+            } else {
+                Image(
+                    painter = painterResource(R.drawable.img_default_artwork_1794853244685),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(44.dp)
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                palette.dominant.copy(alpha = 0.72f),
+                                palette.muted.copy(alpha = 0.80f),
+                                LiquidGlassBase.copy(alpha = 0.90f)
+                            )
+                        )
+                    )
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.pageBackground)
+            )
+        }
+        content()
+    }
+}
+
+@Composable
+fun AppleCard(
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = 22.dp,
+    onClick: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    val colors = LocalMusicPlayerColors.current
+    val shape = RoundedCornerShape(cornerRadius)
+    val border = if (colors.themeMode == ThemeMode.LIQUID_GLASS) {
+        BorderStroke(0.75.dp, colors.glassStroke)
+    } else null
+
+    Surface(
+        modifier = if (onClick != null) modifier.clip(shape).clickable(onClick = onClick) else modifier,
+        shape = shape,
+        color = colors.cardSurface,
+        border = border,
+        tonalElevation = if (colors.themeMode == ThemeMode.LIGHT) 1.dp else 0.dp
+    ) {
+        content()
+    }
+}
+
+@Composable
+fun ArtworkImage(
+    artworkUri: String?,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = 14.dp
+) {
+    val shape = RoundedCornerShape(cornerRadius)
+    if (artworkUri.isNullOrBlank()) {
+        Image(
+            painter = painterResource(R.drawable.img_default_artwork_1794853244685),
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(shape)
+        )
+    } else {
+        AsyncImage(
+            model = artworkUri,
+            contentDescription = contentDescription,
+            placeholder = painterResource(R.drawable.img_default_artwork_1794853244685),
+            error = painterResource(R.drawable.img_default_artwork_1794853244685),
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(shape)
+        )
+    }
+}
+
+@Composable
+fun AppleMusicSegmentedSwitcher(
+    selectedSource: MusicSource,
+    onSelect: (MusicSource) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalMusicPlayerColors.current
+    val sources = MusicSource.entries
+    val selectedIndex = sources.indexOf(selectedSource).coerceAtLeast(0)
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .testTag("source_switcher"),
+        shape = RoundedCornerShape(22.dp),
+        color = colors.elevatedSurface.copy(alpha = if (colors.themeMode == ThemeMode.LIQUID_GLASS) 0.5f else 1f),
+        border = if (colors.themeMode == ThemeMode.LIQUID_GLASS) BorderStroke(0.5.dp, colors.glassStroke) else null
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(4.dp)) {
+            val segmentWidth = maxWidth / sources.size
+            val indicatorOffset by animateDpAsState(
+                targetValue = segmentWidth * selectedIndex,
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioNoBouncy),
+                label = "seg_offset"
+            )
+
+            Surface(
+                modifier = Modifier
+                    .offset(x = indicatorOffset)
+                    .width(segmentWidth)
+                    .height(36.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = if (colors.themeMode == ThemeMode.LIGHT) Color.White else colors.accent,
+                shadowElevation = if (colors.themeMode == ThemeMode.LIGHT) 2.dp else 0.dp
+            ) {}
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                sources.forEach { src ->
+                    val isSelected = src == selectedSource
+                    val textColor by animateColorAsState(
+                        targetValue = when {
+                            isSelected && colors.themeMode == ThemeMode.LIGHT -> colors.accent
+                            isSelected -> Color.White
+                            else -> colors.textSecondary
+                        },
+                        label = "seg_text"
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable { onSelect(src) }
+                            .testTag("source_tab_${src.name.lowercase()}"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = src.labelVi,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = textColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FloatingMiniPlayer(
+    track: Track?,
+    isPlaying: Boolean,
+    progress: Float,
+    onTap: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onSkipNext: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (track == null) return
+    val colors = LocalMusicPlayerColors.current
+    val shape = RoundedCornerShape(22.dp)
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .clip(shape)
+            .clickable(onClick = onTap)
+            .testTag("floating_mini_player"),
+        shape = shape,
+        color = if (colors.themeMode == ThemeMode.LIQUID_GLASS) {
+            Color(0xB8181820)
+        } else {
+            colors.cardSurface
+        },
+        border = BorderStroke(0.75.dp, colors.glassStroke),
+        shadowElevation = 10.dp
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ArtworkImage(
+                    artworkUri = track.artworkUri,
+                    contentDescription = track.title,
+                    modifier = Modifier.size(46.dp),
+                    cornerRadius = 11.dp
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = track.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${track.artist} • ${track.format.extension.uppercase()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(
+                    onClick = onTogglePlayPause,
+                    modifier = Modifier.size(48.dp).testTag("mini_play_pause")
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
+                        tint = colors.textPrimary
+                    )
+                }
+                IconButton(
+                    onClick = onSkipNext,
+                    modifier = Modifier.size(48.dp).testTag("mini_next")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.SkipNext,
+                        contentDescription = "Bài tiếp theo",
+                        tint = colors.textPrimary
+                    )
+                }
+            }
+            LinearProgressIndicator(
+                progress = { progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth().height(2.5.dp),
+                color = colors.accent,
+                trackColor = colors.divider
+            )
+        }
+    }
+}
+
+@Composable
+fun TrackRowItem(
+    track: Track,
+    isCurrent: Boolean,
+    onPlay: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onDownload: () -> Unit,
+    onAddToQueue: () -> Unit,
+    onDeleteLocal: () -> Unit,
+    onEditGenre: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalMusicPlayerColors.current
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onPlay)
+            .testTag("track_row_${track.id}"),
+        shape = RoundedCornerShape(18.dp),
+        color = if (isCurrent) colors.accent.copy(alpha = 0.14f) else colors.cardSurface,
+        border = if (colors.themeMode == ThemeMode.LIQUID_GLASS) BorderStroke(0.5.dp, colors.glassStroke) else null
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ArtworkImage(
+                artworkUri = track.artworkUri,
+                contentDescription = track.title,
+                modifier = Modifier.size(52.dp),
+                cornerRadius = 12.dp
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (isCurrent) colors.accent else colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val subtitle = buildString {
+                    append(track.artist)
+                    if (!track.telegramTopicName.isNullOrBlank()) {
+                        append(" • ")
+                        append(track.telegramTopicName)
+                    }
+                    append(" • ")
+                    append(track.format.extension.uppercase())
+                    if (track.format.isLossless) append(" Lossless")
+                }
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (track.source != MusicSource.OFFLINE) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        when (track.downloadStatus) {
+                            DownloadStatus.COMPLETED -> {
+                                Icon(
+                                    imageVector = Icons.Filled.CloudDone,
+                                    contentDescription = "Đã tải offline",
+                                    tint = colors.accent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Đã lưu offline",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.accent
+                                )
+                            }
+                            DownloadStatus.DOWNLOADING -> {
+                                CircularProgressIndicator(
+                                    progress = { track.downloadProgress },
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = colors.accent
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Đang tải ${(track.downloadProgress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.textSecondary
+                                )
+                            }
+                            else -> {
+                                val buttonLabel = if (track.source == MusicSource.TELEGRAM) {
+                                    "Tải về nghe offline"
+                                } else {
+                                    "Tải xuống"
+                                }
+                                Surface(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable(onClick = onDownload)
+                                        .testTag("download_btn_${track.id}"),
+                                    color = colors.accent.copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Download,
+                                            contentDescription = buttonLabel,
+                                            tint = colors.accent,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = buttonLabel,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = colors.accent
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(44.dp)
+            ) {
+                Icon(
+                    imageVector = if (track.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    contentDescription = "Yêu thích",
+                    tint = if (track.isFavorite) colors.accent else colors.textSecondary
+                )
+            }
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = "Tùy chọn bài hát",
+                        tint = colors.textSecondary
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Thêm vào phát tiếp theo") },
+                        leadingIcon = { Icon(Icons.Filled.QueueMusic, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onAddToQueue()
+                        }
+                    )
+                    if (onEditGenre != null) {
+                        DropdownMenuItem(
+                            text = { Text("Đổi thể loại (${track.genre.displayNameVi})") },
+                            onClick = {
+                                menuExpanded = false
+                                onEditGenre()
+                            }
+                        )
+                    }
+                    if (track.downloadStatus == DownloadStatus.COMPLETED || track.source == MusicSource.OFFLINE) {
+                        DropdownMenuItem(
+                            text = { Text("Xóa bản cục bộ") },
+                            leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onDeleteLocal()
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun formatDurationMs(ms: Long): String {
+    if (ms <= 0L) return "0:00"
+    val totalSec = ms / 1000L
+    val min = totalSec / 60L
+    val sec = totalSec % 60L
+    return "%d:%02d".format(min, sec)
+}

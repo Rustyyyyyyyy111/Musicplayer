@@ -1,0 +1,102 @@
+<resources>
+    <string name="app_name">Music Player</string>
+
+    <!-- Navigation -->
+    <string name="nav_listen_now">Nghe nhạc</string>
+    <string name="nav_library">Thư viện</string>
+    <string name="nav_search">Tìm kiếm</string>
+    <string name="nav_settings">Cài đặt</string>
+
+    <!-- Sources -->
+    <string name="source_telegram">Telegram</string>
+    <string name="source_youtube_music">YouTube Music</string>
+    <string name="source_offline">Offline</string>
+
+    <!-- Actions -->
+    <string name="action_download_offline">Tải về nghe offline</string>
+    <string name="action_download_youtube">Tải xuống</string>
+    <string name="action_play">Phát</string>
+    <string name="action_pause">Tạm dừng</string>
+    <string name="action_next">Bài tiếp theo</string>
+    <string name="action_previous">Bài trước</string>
+    <string name="action_shuffle">Phát ngẫu nhiên</string>
+    <string name="action_repeat">Lặp lại</string>
+    <string name="action_cancel">Hủy</string>
+    <string name="action_retry">Thử lại</string>
+    <string name="action_resume">Tiếp tục</string>
+    <string name="action_delete_local">Xóa bản cục bộ</string>
+    <string name="action_save">Lưu</string>
+    <string name="action_back">Quay lại</string>
+    <string name="action_select_all">Chọn tất cả</string>
+    <string name="action_deselect_all">Bỏ chọn</string>
+    <string name="action_scan_selected">Quét nguồn đã chọn</string>
+    <string name="action_scan_single">Quét hội thoại này</string>
+
+    <!-- Library Categories -->
+    <string name="cat_all_songs">Tất cả bài hát</string>
+    <string name="cat_artists">Nghệ sĩ</string>
+    <string name="cat_albums">Album</string>
+    <string name="cat_genres">Thể loại</string>
+    <string name="cat_playlists">Playlist</string>
+    <string name="cat_favorites">Yêu thích</string>
+    <string name="cat_downloaded">Đã tải xuống</string>
+    <string name="cat_recent">Gần đây</string>
+    <string name="cat_duplicates">Quản lý trùng lặp</string>
+
+    <!-- Telegram -->
+    <string name="telegram_source_picker_title">Chọn nguồn nhạc Telegram</string>
+    <string name="telegram_auth_title">Đăng nhập Telegram</string>
+    <string name="telegram_phone_hint">Số điện thoại (ví dụ +84901234567)</string>
+    <string name="telegram_otp_hint">Nhập mã OTP 5 chữ số</string>
+    <string name="telegram_2fa_hint">Mật khẩu xác thực 2 bước (2FA)</string>
+    <string name="telegram_readonly_notice">Chế độ chỉ đọc nghiêm ngặt: Ứng dụng không bao giờ gửi, sửa hoặc xóa tin nhắn Telegram của bạn.</string>
+    <string name="telegram_missing_keys">Chưa cấu hình TELEGRAM_API_ID và TELEGRAM_API_HASH trong Secrets của AI Studio.</string>
+    <string name="telegram_abi_warning">Bản dựng tối ưu arm64-v8a: thư viện gốc TDLib không chạy trên giả lập x86/x86_64.</string>
+
+    <!-- Settings Sections -->
+    <string name="settings_title">Cài đặt</string>
+    <string name="settings_sec_appearance">Giao diện</string>
+    <string name="settings_theme_change">Đổi giao diện</string>
+    <string name="settings_theme_light">Chế độ sáng</string>
+    <string name="settings_theme_dark">Chế độ tối</string>
+    <string name="settings_theme_liquid_glass">Liquid Glass</string>
+
+    <string name="settings_sec_sources">Nguồn nhạc</string>
+    <string name="settings_tg_account">Tài khoản Telegram</string>
+    <string name="settings_tg_channels">Chọn kênh lấy nhạc</string>
+    <string name="settings_tg_groups">Chọn nhóm lấy nhạc</string>
+    <string name="settings_tg_chats">Chọn cuộc trò chuyện</string>
+    <string name="settings_yt_music">YouTube Music</string>
+    <string name="settings_auto_sync">Đồng bộ tự động</string>
+
+    <string name="settings_sec_playback">Nhạc và phát lại</string>
+    <string name="settings_crossfade">Crossfade</string>
+    <string name="settings_equalizer">Equalizer</string>
+    <string name="settings_lyrics">Lyrics</string>
+    <string name="settings_car_mode">Chế độ xe</string>
+    <string name="settings_auto_next">Tự động phát bài tiếp theo</string>
+
+    <string name="settings_sec_storage">Bộ nhớ</string>
+    <string name="settings_download_dir">Thư mục tải nhạc</string>
+    <string name="settings_cache_size">Dung lượng cache</string>
+    <string name="settings_cache_limit">Giới hạn cache</string>
+    <string name="settings_preload_next">Tự tải trước</string>
+    <string name="settings_clear_cache">Dọn bộ đệm</string>
+    <string name="settings_manage_offline">Quản lý bài tải offline</string>
+
+    <string name="settings_sec_system">Hệ thống</string>
+    <string name="settings_activity_logs">Nhật ký hoạt động</string>
+    <string name="settings_export_logs">Xuất log</string>
+    <string name="settings_version_info">Thông tin phiên bản</string>
+    <string name="settings_app_update">Cập nhật ứng dụng</string>
+
+    <!-- Crossfade -->
+    <string name="crossfade_off">Tắt</string>
+    <string name="crossfade_2s">2 giây</string>
+    <string name="crossfade_4s">4 giây</string>
+    <string name="crossfade_6s">6 giây</string>
+
+    <!-- Storage Permissions -->
+    <string name="permission_audio_rationale">Cần quyền đọc tệp âm thanh để lập chỉ mục thư viện nhạc Offline trên thiết bị.</string>
+    <string name="permission_grant">Cấp quyền</string>
+</resources>
