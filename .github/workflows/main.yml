@@ -17,16 +17,27 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Build APK directly with Gradle
+      - name: Prepare missing config files
         run: |
-          # Kiểm tra nếu có thư mục android bên trong thì vào đó, nếu không chạy trực tiếp tại gốc
+          # 1. Tạo file google-services.json giả lập
+          mkdir -p app
+          if [ ! -f "app/google-services.json" ]; then
+            echo '{"project_info": {"project_number": "123456789","project_id": "musicplayer-temp","storage_bucket": "musicplayer-temp.appspot.com"},"client": [{"client_info": {"mobilesdk_app_id": "1:123456789:android:123456789abcdef","android_client_info": {"package_name": "com.example.audio"}},"oauth_client": [],"services": {"analytics_service": {"status": "1"},"app_invite_service": {"status": "1"},"ads_service": {"status": "1"}}}],"api_version": "1"}' > app/google-services.json
+          fi
+
+          # 2. Tạo file debug.keystore để ký ứng dụng
+          if [ ! -f "debug.keystore" ]; then
+            echo "Đang tạo file debug.keystore..."
+            keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build APK with Gradle
+        run: |
           if [ -d "android" ]; then
             cd android
           fi
           
-          # Nếu chưa có gradle wrapper, tạo tự động bằng lệnh gradle wrapper
           if [ ! -f "./gradlew" ]; then
-            echo "Đang khởi tạo Gradle Wrapper..."
             gradle wrapper
           fi
           
