@@ -17,19 +17,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Grant execute permission and Build APK
+      - name: Build APK directly with Gradle
         run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x gradlew
-            ./gradlew assembleDebug
-          elif [ -f "android/gradlew" ]; then
+          # Kiểm tra nếu có thư mục android bên trong thì vào đó, nếu không chạy trực tiếp tại gốc
+          if [ -d "android" ]; then
             cd android
-            chmod +x gradlew
-            ./gradlew assembleDebug
-          else
-            echo "Không tìm thấy file gradlew ở đâu cả!"
-            exit 1
           fi
+          
+          # Nếu chưa có gradle wrapper, tạo tự động bằng lệnh gradle wrapper
+          if [ ! -f "./gradlew" ]; then
+            echo "Đang khởi tạo Gradle Wrapper..."
+            gradle wrapper
+          fi
+          
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
