@@ -397,6 +397,7 @@ fun TrackRowItem(
                     append(" • ")
                     append(track.format.extension.uppercase())
                     if (track.format.isLossless) append(" Lossless")
+                    if (track.bpm > 0) append(" • ${track.bpm} BPM")
                 }
                 Text(
                     text = subtitle,

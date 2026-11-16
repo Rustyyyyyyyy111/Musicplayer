@@ -77,6 +77,21 @@ class TelegramAudioDataSource(
             seek(readPosition)
         }
 
+        if (initialFile.local.isDownloadingCompleted) {
+            runBlocking {
+                cacheManager.recordCacheAccess(
+                    key = "tg_stream_$fileId",
+                    trackId = "tg_$fileId",
+                    file = localFile!!,
+                    isPermanentOffline = false
+                )
+            }
+        } else {
+            runBlocking {
+                cacheManager.touchCacheAccess("tg_stream_$fileId")
+            }
+        }
+
         opened = true
         transferStarted(dataSpec)
         logger.log("TG_PLAY", "INFO", "Phát progressive Telegram fileId=$fileId tại offset=$readPosition")

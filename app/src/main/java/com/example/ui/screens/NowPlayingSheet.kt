@@ -73,9 +73,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import com.example.core.model.DownloadStatus
 import com.example.core.model.MusicSource
 import com.example.core.model.RepeatMode
+import com.example.core.model.SleepTimerMode
 import com.example.ui.components.ArtworkImage
 import com.example.ui.components.formatDurationMs
 import com.example.ui.theme.LocalLiquidGlassPalette
@@ -167,12 +170,41 @@ fun NowPlayingSheet(
                     }
                     Text(text = spec, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.60f))
                 }
-                IconButton(onClick = { showSleepTimerDialog = true }, modifier = Modifier.size(48.dp)) {
+                val timerActive = playback.sleepTimerMode != SleepTimerMode.OFF
+                IconButton(
+                    onClick = { showSleepTimerDialog = true },
+                    modifier = Modifier.size(48.dp).testTag("sleep_timer_btn")
+                ) {
                     Icon(
                         Icons.Filled.Timer,
                         contentDescription = "Hẹn giờ tắt",
-                        tint = if (playback.sleepTimerRemainingMs > 0L) colors.accent else Color.White
+                        tint = if (timerActive) colors.accent else Color.White
                     )
+                }
+            }
+            if (playback.sleepTimerMode != SleepTimerMode.OFF) {
+                val timerBadgeText = when (playback.sleepTimerMode) {
+                    SleepTimerMode.AFTER_MINUTES -> "Hẹn tắt còn ${formatDurationMs(playback.sleepTimerRemainingMs)}"
+                    SleepTimerMode.END_OF_CURRENT_TRACK -> "Tắt sau bài hát hiện tại"
+                    SleepTimerMode.AFTER_N_TRACKS -> "Tắt sau ${playback.sleepTimerRemainingTracks} bài nữa"
+                    SleepTimerMode.OFF -> ""
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.accent.copy(alpha = 0.24f),
+                        modifier = Modifier.clickable { showSleepTimerDialog = true }
+                    ) {
+                        Text(
+                            text = timerBadgeText,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
                 }
             }
 
@@ -458,16 +490,105 @@ fun NowPlayingSheet(
     }
 
     if (showSleepTimerDialog) {
+        var customMinutesText by remember { mutableStateOf("") }
+        var nextTracksCount by remember { mutableStateOf("3") }
         AlertDialog(
             onDismissRequest = { showSleepTimerDialog = false },
-            title = { Text("Hẹn giờ tắt nhạc") },
+            title = { Text("Hẹn giờ tắt nhạc nâng cao") },
             text = {
-                Column {
-                    listOf(0 to "Tắt hẹn giờ", 15 to "15 phút", 30 to "30 phút", 45 to "45 phút", 60 to "60 phút").forEach { (min, label) ->
-                        TextButton(onClick = {
-                            viewModel.setSleepTimer(min)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Tắt theo thời gian (N phút)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = colors.accent
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(15, 30, 45, 60).forEach { min ->
+                            TextButton(
+                                onClick = {
+                                    viewModel.setSleepTimerMinutes(min)
+                                    showSleepTimerDialog = false
+                                }
+                            ) {
+                                Text("${min}p")
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = customMinutesText,
+                            onValueChange = { customMinutesText = it.filter(Char::isDigit) },
+                            label = { Text("Tùy chỉnh (phút)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).testTag("sleep_custom_minutes_input")
+                        )
+                        Button(
+                            onClick = {
+                                val min = customMinutesText.toIntOrNull()?.coerceAtLeast(1) ?: 10
+                                viewModel.setSleepTimerMinutes(min)
+                                showSleepTimerDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.accent)
+                        ) { Text("Đặt") }
+                    }
+
+                    Text(
+                        "Tắt theo bài hát",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = colors.accent,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    TextButton(
+                        onClick = {
+                            viewModel.setSleepTimerEndOfTrack()
                             showSleepTimerDialog = false
-                        }) { Text(label) }
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("sleep_end_of_track_btn")
+                    ) {
+                        Text("Tắt sau bài hát hiện tại")
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = nextTracksCount,
+                            onValueChange = { nextTracksCount = it.filter(Char::isDigit) },
+                            label = { Text("Số bài tiếp theo (N)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).testTag("sleep_n_tracks_input")
+                        )
+                        Button(
+                            onClick = {
+                                val count = nextTracksCount.toIntOrNull()?.coerceAtLeast(1) ?: 3
+                                viewModel.setSleepTimerAfterTracks(count)
+                                showSleepTimerDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
+                            modifier = Modifier.testTag("sleep_n_tracks_apply")
+                        ) { Text("Áp dụng") }
+                    }
+
+                    if (playback.sleepTimerMode != SleepTimerMode.OFF) {
+                        TextButton(
+                            onClick = {
+                                viewModel.cancelSleepTimer()
+                                showSleepTimerDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Hủy hẹn giờ đang chạy", color = colors.accent)
+                        }
                     }
                 }
             },

@@ -28,14 +28,18 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -69,6 +73,7 @@ import com.example.core.model.ArtistGroup
 import com.example.core.model.GenreType
 import com.example.core.model.LibraryCategory
 import com.example.core.model.MusicSource
+import com.example.core.model.SmartPlaylistType
 import com.example.core.model.Track
 import com.example.ui.components.AppleCard
 import com.example.ui.components.AppleMusicSegmentedSwitcher
@@ -103,6 +108,9 @@ fun LibraryScreen(
     val downloaded by viewModel.downloadedTracks.collectAsStateWithLifecycle()
     val recent by viewModel.recentTracks.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val notPlayed30Days by viewModel.notPlayed30DaysTracks.collectAsStateWithLifecycle()
+    val mostPlayedMonth by viewModel.mostPlayedThisMonthTracks.collectAsStateWithLifecycle()
+    val highEnergy130Bpm by viewModel.highEnergyTracks.collectAsStateWithLifecycle()
     val topics by viewModel.telegramTopics.collectAsStateWithLifecycle()
     val duplicates by viewModel.duplicateGroups.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
@@ -125,6 +133,7 @@ fun LibraryScreen(
     var selectedArtistGroup by remember { mutableStateOf<ArtistGroup?>(null) }
     var selectedGenre by remember { mutableStateOf<GenreType?>(null) }
     var selectedAlbumName by remember { mutableStateOf<String?>(null) }
+    var selectedSmartPlaylist by remember { mutableStateOf<SmartPlaylistType?>(null) }
     var editingGenreTrack by remember { mutableStateOf<Track?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
 
@@ -162,6 +171,7 @@ fun LibraryScreen(
         selectedArtistGroup = null
         selectedGenre = null
         selectedAlbumName = null
+        selectedSmartPlaylist = null
         when (selectedSource) {
             MusicSource.TELEGRAM -> tgCategory = cat
             MusicSource.YOUTUBE_MUSIC -> ytCategory = cat
@@ -256,7 +266,10 @@ fun LibraryScreen(
             )
 
             // Category Pills
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.testTag("library_category_row")
+            ) {
                 items(LibraryTabOption.entries) { cat ->
                     val selected = cat == activeCategory
                     FilterChip(
@@ -267,17 +280,19 @@ fun LibraryScreen(
                             selectedContainerColor = colors.accent,
                             selectedLabelColor = Color.White,
                             labelColor = colors.textPrimary
-                        )
+                        ),
+                        modifier = Modifier.testTag("lib_cat_${cat.name.lowercase()}")
                     )
                 }
             }
         }
 
-        // Drill-down header if viewing an Artist / Forum Topic / Album / Genre
-        if (selectedArtistGroup != null || selectedAlbumName != null || selectedGenre != null) {
+        // Drill-down header if viewing an Artist / Forum Topic / Album / Genre / Smart Playlist
+        if (selectedArtistGroup != null || selectedAlbumName != null || selectedGenre != null || selectedSmartPlaylist != null) {
             val headerTitle = selectedArtistGroup?.name
                 ?: selectedAlbumName
-                ?: selectedGenre?.displayNameVi.orEmpty()
+                ?: selectedGenre?.displayNameVi
+                ?: selectedSmartPlaylist?.titleVi.orEmpty()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -288,6 +303,7 @@ fun LibraryScreen(
                     selectedArtistGroup = null
                     selectedAlbumName = null
                     selectedGenre = null
+                    selectedSmartPlaylist = null
                 }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Quay lại", tint = colors.accent)
                 }
@@ -302,7 +318,9 @@ fun LibraryScreen(
         val activeListState = listStates[selectedSource] ?: LazyListState()
         LazyColumn(
             state = activeListState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("library_content_list"),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 160.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -352,6 +370,37 @@ fun LibraryScreen(
                         onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
                         onEditGenre = { editingGenreTrack = track }
                     )
+                }
+            } else if (selectedSmartPlaylist != null) {
+                val smartTracks = when (selectedSmartPlaylist!!) {
+                    SmartPlaylistType.NOT_PLAYED_30_DAYS -> notPlayed30Days
+                    SmartPlaylistType.MOST_PLAYED_THIS_MONTH -> mostPlayedMonth
+                    SmartPlaylistType.HIGH_ENERGY_130_BPM -> highEnergy130Bpm
+                }
+                if (smartTracks.isEmpty()) {
+                    item {
+                        AppleCard(cornerRadius = 20.dp) {
+                            Text(
+                                text = "Chưa có bài hát nào khớp điều kiện của danh sách phát thông minh này.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.textSecondary,
+                                modifier = Modifier.padding(18.dp)
+                            )
+                        }
+                    }
+                } else {
+                    items(smartTracks, key = { "sp_${it.id}" }) { track ->
+                        TrackRowItem(
+                            track = track,
+                            isCurrent = playback.currentTrack?.id == track.id,
+                            onPlay = { viewModel.playTrack(track, smartTracks) },
+                            onToggleFavorite = { viewModel.toggleFavorite(track) },
+                            onDownload = { viewModel.downloadTrack(track) },
+                            onAddToQueue = { viewModel.addToQueueNext(track) },
+                            onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
+                            onEditGenre = { editingGenreTrack = track }
+                        )
+                    }
                 }
             } else {
                 when (activeCategory) {
@@ -531,6 +580,84 @@ fun LibraryScreen(
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text("Xuất M3U")
                                 }
+                            }
+                        }
+                        item {
+                            Text(
+                                text = "Danh sách phát thông minh (Room DB)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary,
+                                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                            )
+                        }
+                        items(SmartPlaylistType.entries, key = { it.id }) { smartType ->
+                            val smartTracks = when (smartType) {
+                                SmartPlaylistType.NOT_PLAYED_30_DAYS -> notPlayed30Days
+                                SmartPlaylistType.MOST_PLAYED_THIS_MONTH -> mostPlayedMonth
+                                SmartPlaylistType.HIGH_ENERGY_130_BPM -> highEnergy130Bpm
+                            }
+                            val smartIcon = when (smartType) {
+                                SmartPlaylistType.NOT_PLAYED_30_DAYS -> Icons.Filled.History
+                                SmartPlaylistType.MOST_PLAYED_THIS_MONTH -> Icons.Filled.TrendingUp
+                                SmartPlaylistType.HIGH_ENERGY_130_BPM -> Icons.Filled.Bolt
+                            }
+                            AppleCard(
+                                cornerRadius = 20.dp,
+                                onClick = { selectedSmartPlaylist = smartType },
+                                modifier = Modifier.testTag("smart_playlist_${smartType.name.lowercase()}")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = colors.accent.copy(alpha = 0.16f),
+                                        modifier = Modifier.size(48.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = smartIcon,
+                                                contentDescription = smartType.titleVi,
+                                                tint = colors.accent
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = smartType.titleVi,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = colors.textPrimary
+                                        )
+                                        Text(
+                                            text = "${smartTracks.size} bài • ${smartType.descriptionVi}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = colors.textSecondary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (smartTracks.isNotEmpty()) {
+                                        IconButton(onClick = { viewModel.playTrack(smartTracks.first(), smartTracks) }) {
+                                            Icon(Icons.Filled.PlayArrow, contentDescription = "Phát tất cả", tint = colors.accent)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (playlists.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "Playlist của bạn",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.textPrimary,
+                                    modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                                )
                             }
                         }
                         items(playlists, key = { it.id }) { pl ->

@@ -22,9 +22,18 @@ import com.example.data.youtube.YouTubeMusicRepository
 import com.example.integrations.PlaylistAndSmartMixManager
 import com.example.integrations.ScrobbleAndProxyManager
 import com.example.lyrics.LyricsEngine
+import com.example.widget.WidgetStateManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 @UnstableApi
 class AppContainer(context: Context) {
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     val database = MusicPlayerDatabase.getInstance(context)
     val credentialStore = SecureCredentialStore(context)
     val settingsDataStore = SettingsDataStore(context, credentialStore)
@@ -98,6 +107,32 @@ class AppContainer(context: Context) {
         scrobbleAndProxyManager,
         activityLogger
     )
+
+    init {
+        appScope.launch {
+            playerController.playbackState
+                .map { state ->
+                    Triple(
+                        state.currentTrack?.id to state.isPlaying,
+                        state.currentTrack,
+                        state.queue
+                    )
+                }
+                .distinctUntilChanged { a, b ->
+                    a.first == b.first &&
+                        a.second?.artworkUri == b.second?.artworkUri &&
+                        a.third.size == b.third.size
+                }
+                .collect { (_, track, queue) ->
+                    WidgetStateManager.publishPlaybackSnapshot(
+                        context = context,
+                        currentTrack = track,
+                        queue = queue,
+                        isPlaying = playerController.playbackState.value.isPlaying
+                    )
+                }
+        }
+    }
 }
 
 class MusicPlayerApplication : Application(), androidx.work.Configuration.Provider {

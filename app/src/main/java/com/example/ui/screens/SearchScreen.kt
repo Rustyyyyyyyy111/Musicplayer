@@ -31,17 +31,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.core.model.Track
+import com.example.core.model.UnifiedSearchTab
 import com.example.data.youtube.YouTubeSearchTab
 import com.example.ui.components.AppleCard
 import com.example.ui.components.ArtworkImage
@@ -52,15 +51,8 @@ import com.example.ui.viewmodel.MusicPlayerViewModel
 @Composable
 fun SearchScreen(viewModel: MusicPlayerViewModel) {
     val colors = LocalMusicPlayerColors.current
-    var searchScopeOnline by rememberSaveable { mutableStateOf(false) }
-    var localQuery by rememberSaveable { mutableStateOf("") }
-    val ytState by viewModel.youtubeState.collectAsStateWithLifecycle()
-    val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
+    val searchState by viewModel.unifiedSearchState.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
-
-    val localResults = remember(localQuery, allTracks) {
-        viewModel.searchLocalTracks(localQuery)
-    }
 
     Column(
         modifier = Modifier
@@ -77,46 +69,55 @@ fun SearchScreen(viewModel: MusicPlayerViewModel) {
                 color = colors.textPrimary
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = !searchScopeOnline,
-                    onClick = { searchScopeOnline = false },
-                    label = { Text("Trong thư viện (Không dấu)") },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = colors.accent,
-                        selectedLabelColor = Color.White
+            // Unified Search Tabs: [Tất cả] | [Thư viện Offline] | [Telegram] | [YouTube Music]
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.testTag("unified_search_tabs")
+            ) {
+                items(UnifiedSearchTab.entries) { tab ->
+                    val selected = searchState.activeTab == tab
+                    FilterChip(
+                        selected = selected,
+                        onClick = { viewModel.selectSearchTab(tab) },
+                        label = {
+                            val countSuffix = when (tab) {
+                                UnifiedSearchTab.OFFLINE -> " (${searchState.offlineResults.size})"
+                                UnifiedSearchTab.TELEGRAM -> " (${searchState.telegramResults.size})"
+                                UnifiedSearchTab.YOUTUBE_MUSIC -> if (searchState.youtubeTracks.isNotEmpty()) " (${searchState.youtubeTracks.size})" else ""
+                                UnifiedSearchTab.ALL -> ""
+                            }
+                            Text("${tab.labelVi}$countSuffix")
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = colors.accent,
+                            selectedLabelColor = Color.White,
+                            labelColor = colors.textPrimary
+                        ),
+                        modifier = Modifier.testTag("search_tab_${tab.name.lowercase()}")
                     )
-                )
-                FilterChip(
-                    selected = searchScopeOnline,
-                    onClick = { searchScopeOnline = true },
-                    label = { Text("YouTube Music") },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = colors.accent,
-                        selectedLabelColor = Color.White
-                    )
-                )
+                }
             }
 
-            val currentText = if (searchScopeOnline) ytState.query else localQuery
             OutlinedTextField(
-                value = currentText,
-                onValueChange = {
-                    if (searchScopeOnline) viewModel.updateYouTubeQuery(it) else localQuery = it
-                },
-                modifier = Modifier.fillMaxWidth().testTag("search_input"),
+                value = searchState.query,
+                onValueChange = { viewModel.updateSearchQuery(it) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("search_input"),
                 placeholder = {
                     Text(
-                        if (searchScopeOnline) "Tìm bài hát, nghệ sĩ, album YouTube Music..."
-                        else "Tìm bài hát, nghệ sĩ, chủ đề Telegram, tên tệp..."
+                        when (searchState.activeTab) {
+                            UnifiedSearchTab.ALL -> "Tìm hợp nhất Offline, Telegram & YouTube Music..."
+                            UnifiedSearchTab.OFFLINE -> "Tìm bài hát, nghệ sĩ, tên tệp Offline (không dấu)..."
+                            UnifiedSearchTab.TELEGRAM -> "Tìm nhạc, chủ đề Forum, kênh Telegram..."
+                            UnifiedSearchTab.YOUTUBE_MUSIC -> "Tìm bài hát, album, nghệ sĩ YouTube Music..."
+                        }
                     )
                 },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
-                    if (currentText.isNotEmpty()) {
-                        IconButton(onClick = {
-                            if (searchScopeOnline) viewModel.updateYouTubeQuery("") else localQuery = ""
-                        }) {
+                    if (searchState.query.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.updateSearchQuery("") }) {
                             Icon(Icons.Filled.Clear, contentDescription = "Xóa")
                         }
                     }
@@ -125,11 +126,11 @@ fun SearchScreen(viewModel: MusicPlayerViewModel) {
                 shape = RoundedCornerShape(18.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = {
-                    if (searchScopeOnline) viewModel.searchYouTubeMusic()
+                    viewModel.submitUnifiedSearch()
                 })
             )
 
-            if (searchScopeOnline) {
+            if (searchState.activeTab == UnifiedSearchTab.YOUTUBE_MUSIC) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -139,11 +140,11 @@ fun SearchScreen(viewModel: MusicPlayerViewModel) {
                         modifier = Modifier.weight(1f),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(YouTubeSearchTab.entries) { tab ->
+                        items(YouTubeSearchTab.entries) { subTab ->
                             FilterChip(
-                                selected = ytState.activeTab == tab,
-                                onClick = { viewModel.selectYouTubeTab(tab) },
-                                label = { Text(tab.labelVi) },
+                                selected = searchState.youtubeSubTab == subTab,
+                                onClick = { viewModel.selectSearchYouTubeSubTab(subTab) },
+                                label = { Text(subTab.labelVi) },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = colors.accent,
                                     selectedLabelColor = Color.White
@@ -153,7 +154,7 @@ fun SearchScreen(viewModel: MusicPlayerViewModel) {
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
-                        onClick = { viewModel.searchYouTubeMusic() },
+                        onClick = { viewModel.submitUnifiedSearch() },
                         colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.testTag("yt_search_submit")
@@ -169,68 +170,195 @@ fun SearchScreen(viewModel: MusicPlayerViewModel) {
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 160.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (!searchScopeOnline) {
-                items(localResults, key = { "loc_${it.id}" }) { track ->
-                    TrackRowItem(
-                        track = track,
-                        isCurrent = playback.currentTrack?.id == track.id,
-                        onPlay = { viewModel.playTrack(track, localResults) },
-                        onToggleFavorite = { viewModel.toggleFavorite(track) },
-                        onDownload = { viewModel.downloadTrack(track) },
-                        onAddToQueue = { viewModel.addToQueueNext(track) },
-                        onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) }
+            val showOffline = searchState.activeTab == UnifiedSearchTab.ALL ||
+                searchState.activeTab == UnifiedSearchTab.OFFLINE
+            val showTelegram = searchState.activeTab == UnifiedSearchTab.ALL ||
+                searchState.activeTab == UnifiedSearchTab.TELEGRAM
+            val showYouTube = searchState.activeTab == UnifiedSearchTab.ALL ||
+                searchState.activeTab == UnifiedSearchTab.YOUTUBE_MUSIC
+
+            if (showOffline && searchState.offlineResults.isNotEmpty()) {
+                item(key = "header_offline") {
+                    SearchGroupHeader(
+                        title = "Thư viện Offline",
+                        count = searchState.offlineResults.size
                     )
                 }
-            } else {
-                if (ytState.isSearching) {
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(24.dp),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            CircularProgressIndicator(color = colors.accent)
-                        }
-                    }
+                items(searchState.offlineResults, key = { "off_${it.id}" }) { track ->
+                    UnifiedTrackRow(
+                        track = track,
+                        currentTrackId = playback.currentTrack?.id,
+                        queueContext = searchState.offlineResults,
+                        viewModel = viewModel
+                    )
                 }
-                ytState.errorMessage?.let { err ->
-                    item {
-                        AppleCard(cornerRadius = 18.dp) {
+            }
+
+            if (showTelegram && searchState.telegramResults.isNotEmpty()) {
+                item(key = "header_telegram") {
+                    SearchGroupHeader(
+                        title = "Telegram",
+                        count = searchState.telegramResults.size
+                    )
+                }
+                items(searchState.telegramResults, key = { "tg_${it.id}" }) { track ->
+                    UnifiedTrackRow(
+                        track = track,
+                        currentTrackId = playback.currentTrack?.id,
+                        queueContext = searchState.telegramResults,
+                        viewModel = viewModel
+                    )
+                }
+            }
+
+            if (showYouTube) {
+                if (searchState.isSearchingYouTube) {
+                    item(key = "yt_loading") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                color = colors.accent,
+                                modifier = Modifier.size(22.dp),
+                                strokeWidth = 2.5.dp
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = err,
+                                text = "Đang tìm trên YouTube Music...",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = colors.textPrimary,
-                                modifier = Modifier.padding(16.dp)
+                                color = colors.textSecondary
                             )
                         }
                     }
                 }
-                items(ytState.tracks, key = { "yt_${it.id}" }) { track ->
-                    TrackRowItem(
-                        track = track,
-                        isCurrent = playback.currentTrack?.id == track.id,
-                        onPlay = { viewModel.playTrack(track, ytState.tracks) },
-                        onToggleFavorite = { viewModel.toggleFavorite(track) },
-                        onDownload = { viewModel.downloadTrack(track) },
-                        onAddToQueue = { viewModel.addToQueueNext(track) },
-                        onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) }
-                    )
-                }
-                items(ytState.collections, key = { it.id }) { item ->
-                    AppleCard(cornerRadius = 18.dp) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            ArtworkImage(item.artworkUrl, item.title, Modifier.size(54.dp), 12.dp)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(item.title, style = MaterialTheme.typography.titleMedium, color = colors.textPrimary)
-                                Text(item.subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.textSecondary)
+                searchState.youtubeError?.let { err ->
+                    if (searchState.activeTab == UnifiedSearchTab.YOUTUBE_MUSIC || searchState.query.trim().length >= 2) {
+                        item(key = "yt_error") {
+                            AppleCard(cornerRadius = 18.dp) {
+                                Text(
+                                    text = err,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.textPrimary,
+                                    modifier = Modifier.padding(14.dp)
+                                )
                             }
+                        }
+                    }
+                }
+                if (searchState.youtubeTracks.isNotEmpty()) {
+                    item(key = "header_youtube") {
+                        SearchGroupHeader(
+                            title = "YouTube Music",
+                            count = searchState.youtubeTracks.size
+                        )
+                    }
+                    items(searchState.youtubeTracks, key = { "yt_${it.id}" }) { track ->
+                        UnifiedTrackRow(
+                            track = track,
+                            currentTrackId = playback.currentTrack?.id,
+                            queueContext = searchState.youtubeTracks,
+                            viewModel = viewModel
+                        )
+                    }
+                }
+                if (searchState.youtubeCollections.isNotEmpty()) {
+                    items(searchState.youtubeCollections, key = { "ytc_${it.id}" }) { item ->
+                        AppleCard(cornerRadius = 18.dp) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ArtworkImage(item.artworkUrl, item.title, Modifier.size(54.dp), 12.dp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(item.title, style = MaterialTheme.typography.titleMedium, color = colors.textPrimary)
+                                    Text(item.subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.textSecondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            val nothingVisible = (!showOffline || searchState.offlineResults.isEmpty()) &&
+                (!showTelegram || searchState.telegramResults.isEmpty()) &&
+                (!showYouTube || (searchState.youtubeTracks.isEmpty() && searchState.youtubeCollections.isEmpty() && !searchState.isSearchingYouTube))
+
+            if (nothingVisible) {
+                item(key = "empty_search") {
+                    AppleCard(cornerRadius = 20.dp) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = if (searchState.query.isBlank()) {
+                                    "Nhập từ khóa để tìm kiếm hợp nhất"
+                                } else {
+                                    "Không tìm thấy kết quả phù hợp"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = "Hỗ trợ tìm tiếng Việt có/không dấu qua thư viện Offline, nguồn Telegram và YouTube Music.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.textSecondary
+                            )
                         }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SearchGroupHeader(title: String, count: Int) {
+    val colors = LocalMusicPlayerColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = colors.textPrimary
+        )
+        Text(
+            text = "$count kết quả",
+            style = MaterialTheme.typography.labelMedium,
+            color = colors.accent
+        )
+    }
+}
+
+@Composable
+private fun UnifiedTrackRow(
+    track: Track,
+    currentTrackId: String?,
+    queueContext: List<Track>,
+    viewModel: MusicPlayerViewModel
+) {
+    TrackRowItem(
+        track = track,
+        isCurrent = currentTrackId == track.id,
+        onPlay = { viewModel.playTrack(track, queueContext) },
+        onToggleFavorite = { viewModel.toggleFavorite(track) },
+        onDownload = { viewModel.downloadTrack(track) },
+        onAddToQueue = { viewModel.addToQueueNext(track) },
+        onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) }
+    )
 }

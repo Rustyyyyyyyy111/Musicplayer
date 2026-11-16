@@ -2,6 +2,7 @@ package com.example.integrations
 
 import com.example.core.model.GenreType
 import com.example.core.model.PlaylistItem
+import com.example.core.model.SmartPlaylistType
 import com.example.core.model.Track
 import com.example.core.util.ActivityLogger
 import com.example.data.local.PlaylistDao
@@ -9,9 +10,8 @@ import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistTrackCrossRef
 import com.example.data.local.TrackDao
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.util.Calendar
 import java.util.UUID
 
 class PlaylistAndSmartMixManager(
@@ -24,6 +24,30 @@ class PlaylistAndSmartMixManager(
             val count = playlistDao.countTracksInPlaylist(entity.id)
             entity.toDomain(count)
         }
+    }
+
+    fun observeSmartPlaylist(type: SmartPlaylistType): Flow<List<Track>> {
+        val now = System.currentTimeMillis()
+        val flow = when (type) {
+            SmartPlaylistType.NOT_PLAYED_30_DAYS -> {
+                val thirtyDaysAgo = now - (30L * 24L * 60L * 60L * 1000L)
+                trackDao.observeNotPlayedIn30Days(thirtyDaysAgo)
+            }
+            SmartPlaylistType.MOST_PLAYED_THIS_MONTH -> {
+                val cal = Calendar.getInstance().apply {
+                    set(Calendar.DAY_OF_MONTH, 1)
+                    set(Calendar.HOUR_OF_DAY, 0)
+                    set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                trackDao.observeMostPlayedThisMonth(cal.timeInMillis)
+            }
+            SmartPlaylistType.HIGH_ENERGY_130_BPM -> {
+                trackDao.observeHighEnergyOver130Bpm()
+            }
+        }
+        return flow.map { list -> list.map { it.toDomain() } }
     }
 
     fun observeTracksInPlaylist(playlistId: String): Flow<List<Track>> {

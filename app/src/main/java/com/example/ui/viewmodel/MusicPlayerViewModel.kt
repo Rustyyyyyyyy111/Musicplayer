@@ -22,10 +22,13 @@ import com.example.core.model.GenreType
 import com.example.core.model.MusicSource
 import com.example.core.model.PlaylistItem
 import com.example.core.model.ProxyConfig
+import com.example.core.model.SleepTimerMode
+import com.example.core.model.SmartPlaylistType
 import com.example.core.model.TelegramChatItem
 import com.example.core.model.TelegramTopicItem
 import com.example.core.model.ThemeMode
 import com.example.core.model.Track
+import com.example.core.model.UnifiedSearchTab
 import com.example.core.util.DuplicateDetector
 import com.example.core.util.VietnameseTextNormalizer
 import com.example.data.local.UserPreferences
@@ -36,13 +39,21 @@ import com.example.lyrics.LyricsResult
 import com.example.ui.theme.LiquidGlassPalette
 import com.example.ui.theme.PaletteExtractor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -55,6 +66,18 @@ data class YouTubeUiState(
     val tracks: List<Track> = emptyList(),
     val collections: List<YouTubeCollectionResult> = emptyList(),
     val errorMessage: String? = null
+)
+
+data class UnifiedSearchUiState(
+    val query: String = "",
+    val activeTab: UnifiedSearchTab = UnifiedSearchTab.ALL,
+    val youtubeSubTab: YouTubeSearchTab = YouTubeSearchTab.SONGS,
+    val offlineResults: List<Track> = emptyList(),
+    val telegramResults: List<Track> = emptyList(),
+    val youtubeTracks: List<Track> = emptyList(),
+    val youtubeCollections: List<YouTubeCollectionResult> = emptyList(),
+    val isSearchingYouTube: Boolean = false,
+    val youtubeError: String? = null
 )
 
 data class LyricsUiState(
@@ -97,6 +120,18 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     val playlists: StateFlow<List<PlaylistItem>> = container.playlistAndSmartMixManager.playlists
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val notPlayed30DaysTracks: StateFlow<List<Track>> = container.playlistAndSmartMixManager
+        .observeSmartPlaylist(SmartPlaylistType.NOT_PLAYED_30_DAYS)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val mostPlayedThisMonthTracks: StateFlow<List<Track>> = container.playlistAndSmartMixManager
+        .observeSmartPlaylist(SmartPlaylistType.MOST_PLAYED_THIS_MONTH)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val highEnergyTracks: StateFlow<List<Track>> = container.playlistAndSmartMixManager
+        .observeSmartPlaylist(SmartPlaylistType.HIGH_ENERGY_130_BPM)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val telegramAuthState: StateFlow<TelegramAuthUiState> = container.telegramAuthentication.uiState
     val telegramAccountSlot: StateFlow<Int> = container.telegramAuthentication.activeAccountSlot
 
@@ -134,6 +169,87 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val _youtubeState = MutableStateFlow(YouTubeUiState())
     val youtubeState: StateFlow<YouTubeUiState> = _youtubeState.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    private val _searchTab = MutableStateFlow(UnifiedSearchTab.ALL)
+    private val _searchYouTubeSubTab = MutableStateFlow(YouTubeSearchTab.SONGS)
+    private val _manualSearchPulse = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+    private val _youtubeAsyncResults: StateFlow<YouTubeUiState> = combine(
+        _searchQuery.map { it.trim() },
+        _searchTab,
+        _searchYouTubeSubTab,
+        _manualSearchPulse.onStart { emit(Unit) }
+    ) { q, tab, subTab, _ ->
+        Triple(q, tab, subTab)
+    }
+        .debounce(320L)
+        .flatMapLatest { (query, tab, subTab) ->
+            val shouldQueryYouTube = query.length >= 2 &&
+                (tab == UnifiedSearchTab.ALL || tab == UnifiedSearchTab.YOUTUBE_MUSIC)
+            if (!shouldQueryYouTube) {
+                flow { emit(YouTubeUiState(query = query, activeTab = subTab)) }
+            } else {
+                flow {
+                    emit(YouTubeUiState(query = query, activeTab = subTab, isSearching = true))
+                    val result = container.youTubeMusicRepository.search(query, subTab)
+                    result.onSuccess { res ->
+                        emit(
+                            YouTubeUiState(
+                                query = query,
+                                activeTab = subTab,
+                                isSearching = false,
+                                tracks = res.tracks,
+                                collections = res.collections
+                            )
+                        )
+                    }.onFailure { err ->
+                        emit(
+                            YouTubeUiState(
+                                query = query,
+                                activeTab = subTab,
+                                isSearching = false,
+                                errorMessage = err.message ?: "Lỗi tìm kiếm YouTube Music"
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), YouTubeUiState())
+
+    val unifiedSearchState: StateFlow<UnifiedSearchUiState> = combine(
+        _searchQuery,
+        _searchTab,
+        _searchYouTubeSubTab,
+        allTracks,
+        _youtubeAsyncResults
+    ) { query, tab, ytSubTab, tracks, ytRes ->
+        val trimmed = query.trim()
+        val offline = tracks.filter { t ->
+            t.source == MusicSource.OFFLINE &&
+                (trimmed.isEmpty() || matchesSearchQuery(t, trimmed))
+        }
+        val telegram = tracks.filter { t ->
+            t.source == MusicSource.TELEGRAM &&
+                (trimmed.isEmpty() || matchesSearchQuery(t, trimmed))
+        }
+        UnifiedSearchUiState(
+            query = query,
+            activeTab = tab,
+            youtubeSubTab = ytSubTab,
+            offlineResults = offline,
+            telegramResults = telegram,
+            youtubeTracks = ytRes.tracks,
+            youtubeCollections = ytRes.collections,
+            isSearchingYouTube = ytRes.isSearching,
+            youtubeError = ytRes.errorMessage
+        )
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UnifiedSearchUiState())
 
     private val _lyricsState = MutableStateFlow(LyricsUiState())
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
@@ -282,9 +398,37 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         _statusToast.value = "Đã thêm '${track.title}' vào phát tiếp theo"
     }
 
-    fun setSleepTimer(minutes: Int) {
-        container.playerController.setSleepTimer(minutes)
+    fun playTrackByIdFromWidget(trackId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val track = trackDao.getTrackById(trackId)?.toDomain() ?: return@launch
+            val currentQueue = playbackState.value.queue
+            val targetList = if (currentQueue.any { it.id == trackId }) currentQueue else listOf(track)
+            withContext(Dispatchers.Main) {
+                playTrack(track, targetList)
+            }
+        }
+    }
+
+    fun setSleepTimer(minutes: Int) = setSleepTimerMinutes(minutes)
+
+    fun setSleepTimerMinutes(minutes: Int) {
+        container.playerController.setSleepTimerMinutes(minutes)
         _statusToast.value = if (minutes > 0) "Đã hẹn giờ tắt sau $minutes phút" else "Đã tắt hẹn giờ"
+    }
+
+    fun setSleepTimerEndOfTrack() {
+        container.playerController.setSleepTimerEndOfTrack()
+        _statusToast.value = "Sẽ dừng phát sau bài hát hiện tại"
+    }
+
+    fun setSleepTimerAfterTracks(count: Int) {
+        container.playerController.setSleepTimerAfterTracks(count)
+        _statusToast.value = if (count > 0) "Sẽ dừng phát sau $count bài tiếp theo" else "Đã tắt hẹn giờ"
+    }
+
+    fun cancelSleepTimer() {
+        container.playerController.cancelSleepTimer()
+        _statusToast.value = "Đã hủy hẹn giờ tắt nhạc"
     }
 
     fun toggleFavorite(track: Track) {
@@ -448,13 +592,33 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // YouTube Music
-    fun updateYouTubeQuery(query: String) {
+    // Unified Search & YouTube Music
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
         _youtubeState.value = _youtubeState.value.copy(query = query)
     }
 
+    fun selectSearchTab(tab: UnifiedSearchTab) {
+        _searchTab.value = tab
+    }
+
+    fun selectSearchYouTubeSubTab(tab: YouTubeSearchTab) {
+        _searchYouTubeSubTab.value = tab
+        _youtubeState.value = _youtubeState.value.copy(activeTab = tab)
+    }
+
+    fun submitUnifiedSearch() {
+        _manualSearchPulse.tryEmit(Unit)
+        if (_searchQuery.value.isNotBlank()) {
+            searchYouTubeMusic()
+        }
+    }
+
+    fun updateYouTubeQuery(query: String) = updateSearchQuery(query)
+
     fun selectYouTubeTab(tab: YouTubeSearchTab) {
         _youtubeState.value = _youtubeState.value.copy(activeTab = tab)
+        _searchYouTubeSubTab.value = tab
         if (_youtubeState.value.query.isNotBlank()) {
             searchYouTubeMusic()
         }
@@ -480,6 +644,11 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     )
                 }
         }
+    }
+
+    private fun matchesSearchQuery(track: Track, query: String): Boolean {
+        val blob = "${track.title} ${track.artist} ${track.album} ${track.telegramTopicName.orEmpty()} ${track.fileName} ${track.telegramChatTitle.orEmpty()}"
+        return VietnameseTextNormalizer.matches(blob, query)
     }
 
     // Playlists & Smart Mix & M3U
@@ -576,6 +745,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun setIncludeVoice(enabled: Boolean) = viewModelScope.launch { container.settingsDataStore.setIncludeVoiceMessages(enabled) }
     fun setAutoSync(enabled: Boolean) = viewModelScope.launch { container.settingsDataStore.setAutoSyncTelegram(enabled) }
     fun setPreloadNext(enabled: Boolean) = viewModelScope.launch { container.settingsDataStore.setPreloadNextTrack(enabled) }
+    fun setShowLyricsOnLockScreen(enabled: Boolean) = viewModelScope.launch {
+        container.settingsDataStore.setShowLyricsOnLockScreen(enabled)
+    }
     fun setCacheLimitBytes(bytes: Long) = viewModelScope.launch {
         container.settingsDataStore.setCacheLimitBytes(bytes)
         container.cacheManager.enforceCacheLimit()

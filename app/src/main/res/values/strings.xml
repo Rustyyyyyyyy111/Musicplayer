@@ -99,4 +99,11 @@
     <!-- Storage Permissions -->
     <string name="permission_audio_rationale">Cần quyền đọc tệp âm thanh để lập chỉ mục thư viện nhạc Offline trên thiết bị.</string>
     <string name="permission_grant">Cấp quyền</string>
+
+    <!-- Widgets & Lock Screen Lyrics -->
+    <string name="widget_mini_player_label">Mini Player Apple Music</string>
+    <string name="widget_mini_player_desc">Điều khiển nhanh phát/tạm dừng và chuyển bài theo phong cách Apple Music.</string>
+    <string name="widget_liquid_glass_label">Danh sách phát Liquid Glass</string>
+    <string name="widget_liquid_glass_desc">Tiện ích hàng đợi phát nhạc kính mờ Liquid Glass với nút điều khiển trực tiếp.</string>
+    <string name="settings_lockscreen_lyrics">Lời bài hát trên Màn hình khóa &amp; Thông báo</string>
 </resources>

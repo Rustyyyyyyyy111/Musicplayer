@@ -65,8 +65,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import android.content.Intent
 import com.example.core.model.MusicSource
 import com.example.core.model.TelegramChatType
+import com.example.core.model.UnifiedSearchTab
 import com.example.ui.components.AppleMusicSurfaceBackground
 import com.example.ui.components.FloatingMiniPlayer
 import com.example.ui.screens.ActivityLogsScreen
@@ -109,10 +111,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val initialTrackId = intent?.getStringExtra("widget_play_track_id")
         setContent {
             val vm: MusicPlayerViewModel = viewModel()
+            LaunchedEffect(initialTrackId) {
+                if (!initialTrackId.isNullOrBlank()) {
+                    vm.playTrackByIdFromWidget(initialTrackId)
+                }
+            }
             MusicPlayerRoot(viewModel = vm)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 }
 
@@ -329,7 +342,7 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                             navController.navigate(TelegramSourcePickerRoute(chatType?.name))
                                         },
                                         onOpenYouTubeSearch = {
-                                            viewModel.selectLibrarySource(MusicSource.YOUTUBE_MUSIC)
+                                            viewModel.selectSearchTab(UnifiedSearchTab.YOUTUBE_MUSIC)
                                             navigateTopTab(SearchRoute)
                                         },
                                         onOpenEqualizer = { navController.navigate(EqualizerRoute) },

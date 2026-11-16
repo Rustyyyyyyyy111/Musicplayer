@@ -59,6 +59,7 @@ data class TrackEntity(
     val lastPlayedEpochMs: Long,
     val playCount: Int,
     val loudnessGainDb: Float,
+    val bpm: Int = 0,
     val normalizedSearchBlob: String
 ) {
     fun toDomain(): Track = Track(
@@ -94,7 +95,8 @@ data class TrackEntity(
         dateAddedEpochMs = dateAddedEpochMs,
         lastPlayedEpochMs = lastPlayedEpochMs,
         playCount = playCount,
-        loudnessGainDb = loudnessGainDb
+        loudnessGainDb = loudnessGainDb,
+        bpm = bpm
     )
 }
 
@@ -132,6 +134,7 @@ fun Track.toEntity(searchBlob: String): TrackEntity = TrackEntity(
     lastPlayedEpochMs = lastPlayedEpochMs,
     playCount = playCount,
     loudnessGainDb = loudnessGainDb,
+    bpm = bpm,
     normalizedSearchBlob = searchBlob
 )
 

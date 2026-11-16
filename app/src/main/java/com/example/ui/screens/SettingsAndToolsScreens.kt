@@ -303,6 +303,14 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsToggleRow(
+                        title = "Lời bài hát trên Màn hình khóa & Thông báo",
+                        subtitle = "Hiển thị trực tiếp từng câu lời bài hát (.lrc) theo thời gian thực trên MediaStyle Notification",
+                        checked = prefs.showLyricsOnLockScreen,
+                        onCheckedChange = { viewModel.setShowLyricsOnLockScreen(it) },
+                        testTag = "setting_lockscreen_lyrics"
+                    )
+                    SettingsDivider()
+                    SettingsToggleRow(
                         title = "Tự động phát bài tiếp theo",
                         subtitle = "Phát liên tục hoặc tự gợi ý bài phù hợp khi hết hàng đợi",
                         checked = prefs.autoPlayNext,

@@ -24,13 +24,15 @@ import com.example.core.model.CrossfadeOption
 import com.example.core.model.EqState
 import com.example.core.model.MusicSource
 import com.example.core.model.RepeatMode
+import com.example.core.model.SleepTimerMode
 import com.example.core.model.Track
 import com.example.core.util.ActivityLogger
+import com.example.core.util.ReplayGainExtractor
 import com.example.data.local.SettingsDataStore
 import com.example.data.local.TrackDao
+import com.example.data.storage.CacheManager
 import com.example.data.telegram.TelegramAudioDataSource
 import com.example.data.telegram.TelegramCore
-import com.example.data.storage.CacheManager
 import com.example.data.youtube.YouTubeMusicRepository
 import com.example.integrations.PlaylistAndSmartMixManager
 import com.example.integrations.ScrobbleAndProxyManager
@@ -45,6 +47,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -59,6 +62,9 @@ data class PlaybackState(
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val sleepTimerRemainingMs: Long = 0L,
+    val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
+    val sleepTimerRemainingTracks: Int = 0,
+    val effectiveReplayGainDb: Float = 0f,
     val crossfadeActive: Boolean = false,
     val errorMessage: String? = null
 )
@@ -130,6 +136,8 @@ class DualPlayerCrossfadeController(
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
+    var onActivePlayerChanged: ((ExoPlayer) -> Unit)? = null
+
     private var crossfadeOption = CrossfadeOption.TWO_SECONDS
     private var autoPlayNext = true
     private var isCrossfading = false
@@ -174,19 +182,27 @@ class DualPlayerCrossfadeController(
                 crossfadeOption = prefs.crossfadeOption
                 autoPlayNext = prefs.autoPlayNext
                 val currentTrack = _playbackState.value.currentTrack
-                val resolvedEq = if (prefs.eqState.autoEqByGenre && currentTrack != null && prefs.eqState.enabled) {
-                    val preset = currentTrack.genre.defaultEqPreset
-                    prefs.eqState.copy(preset = preset, bandGainsDb = preset.gainsDb)
-                } else {
-                    prefs.eqState
-                }
-                eqProcessor.updateSettings(resolvedEq, currentTrack?.loudnessGainDb ?: 0f)
+                applyTrackDspSettings(currentTrack, prefs.eqState)
                 _playbackState.value = _playbackState.value.copy(
                     shuffleEnabled = prefs.shuffleEnabled,
                     repeatMode = prefs.repeatMode
                 )
             }
         }
+    }
+
+    private fun applyTrackDspSettings(track: Track?, eqState: EqState): Float {
+        val resolvedEq = if (eqState.autoEqByGenre && track != null && eqState.enabled) {
+            val preset = track.genre.defaultEqPreset
+            eqState.copy(preset = preset, bandGainsDb = preset.gainsDb)
+        } else {
+            eqState
+        }
+        val rawGainDb = track?.let { ReplayGainExtractor.resolvePlaybackLoudnessGainDb(it) } ?: 0f
+        eqProcessor.updateSettings(resolvedEq, rawGainDb)
+        val effectiveGain = if (eqState.loudnessNormalization) rawGainDb else 0f
+        _playbackState.value = _playbackState.value.copy(effectiveReplayGainDb = effectiveGain)
+        return effectiveGain
     }
 
     private fun restoreLastPlaybackCheckpoint() {
@@ -241,7 +257,11 @@ class DualPlayerCrossfadeController(
     fun togglePlayPause() {
         val p = activePlayer
         if (p.mediaItemCount == 0 && _playbackState.value.currentTrack != null) {
-            playTrackInternal(_playbackState.value.currentTrack!!, resetStandby = true, seekToMs = _playbackState.value.positionMs)
+            playTrackInternal(
+                _playbackState.value.currentTrack!!,
+                resetStandby = true,
+                seekToMs = _playbackState.value.positionMs
+            )
             return
         }
         if (p.isPlaying) {
@@ -311,29 +331,105 @@ class DualPlayerCrossfadeController(
         }
     }
 
-    fun setSleepTimer(minutes: Int) {
+    fun setSleepTimer(minutes: Int) = setSleepTimerMinutes(minutes)
+
+    fun setSleepTimerMinutes(minutes: Int) {
         sleepTimerJob?.cancel()
         if (minutes <= 0) {
-            _playbackState.value = _playbackState.value.copy(sleepTimerRemainingMs = 0L)
+            cancelSleepTimer()
             return
         }
         var remaining = minutes * 60_000L
-        _playbackState.value = _playbackState.value.copy(sleepTimerRemainingMs = remaining)
+        _playbackState.value = _playbackState.value.copy(
+            sleepTimerMode = SleepTimerMode.AFTER_MINUTES,
+            sleepTimerRemainingMs = remaining,
+            sleepTimerRemainingTracks = 0
+        )
+        logger.log("SLEEP_TIMER", "INFO", "Hẹn giờ tắt nhạc sau $minutes phút")
         sleepTimerJob = scope.launch {
             while (remaining > 0L) {
                 delay(1000L)
                 remaining -= 1000L
-                _playbackState.value = _playbackState.value.copy(sleepTimerRemainingMs = remaining.coerceAtLeast(0L))
+                _playbackState.value = _playbackState.value.copy(
+                    sleepTimerRemainingMs = remaining.coerceAtLeast(0L)
+                )
             }
-            activePlayer.pause()
-            standbyPlayer.pause()
-            logger.log("PLAYER", "INFO", "Hẹn giờ tắt nhạc đã kích hoạt")
+            triggerSleepTimerPause("Hẹn giờ tắt nhạc ($minutes phút) đã kích hoạt")
+        }
+    }
+
+    fun setSleepTimerEndOfTrack() {
+        sleepTimerJob?.cancel()
+        _playbackState.value = _playbackState.value.copy(
+            sleepTimerMode = SleepTimerMode.END_OF_CURRENT_TRACK,
+            sleepTimerRemainingMs = 0L,
+            sleepTimerRemainingTracks = 1
+        )
+        logger.log("SLEEP_TIMER", "INFO", "Hẹn giờ tắt nhạc sau bài hát hiện tại")
+    }
+
+    fun setSleepTimerAfterTracks(trackCount: Int) {
+        sleepTimerJob?.cancel()
+        if (trackCount <= 0) {
+            cancelSleepTimer()
+            return
+        }
+        _playbackState.value = _playbackState.value.copy(
+            sleepTimerMode = SleepTimerMode.AFTER_N_TRACKS,
+            sleepTimerRemainingMs = 0L,
+            sleepTimerRemainingTracks = trackCount
+        )
+        logger.log("SLEEP_TIMER", "INFO", "Hẹn giờ tắt nhạc sau $trackCount bài tiếp theo")
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        _playbackState.value = _playbackState.value.copy(
+            sleepTimerMode = SleepTimerMode.OFF,
+            sleepTimerRemainingMs = 0L,
+            sleepTimerRemainingTracks = 0
+        )
+    }
+
+    private fun triggerSleepTimerPause(logMessage: String) {
+        activePlayer.pause()
+        standbyPlayer.pause()
+        _playbackState.value = _playbackState.value.copy(
+            isPlaying = false,
+            sleepTimerMode = SleepTimerMode.OFF,
+            sleepTimerRemainingMs = 0L,
+            sleepTimerRemainingTracks = 0
+        )
+        logger.log("PLAYER", "INFO", logMessage)
+    }
+
+    /**
+     * Evaluates whether a track-based sleep timer should stop playback instead of advancing.
+     * Returns true if playback was paused by the sleep timer.
+     */
+    internal fun consumeTrackSleepTimerOnEnd(): Boolean {
+        val state = _playbackState.value
+        return when (state.sleepTimerMode) {
+            SleepTimerMode.END_OF_CURRENT_TRACK -> {
+                triggerSleepTimerPause("Đã dừng phát sau khi kết thúc bài hát hiện tại")
+                true
+            }
+            SleepTimerMode.AFTER_N_TRACKS -> {
+                val left = state.sleepTimerRemainingTracks - 1
+                if (left <= 0) {
+                    triggerSleepTimerPause("Đã dừng phát sau khi hoàn tất số bài đã hẹn")
+                    true
+                } else {
+                    _playbackState.value = state.copy(sleepTimerRemainingTracks = left)
+                    false
+                }
+            }
+            else -> false
         }
     }
 
     fun applyEqImmediate(eqState: EqState) {
-        val loudness = _playbackState.value.currentTrack?.loudnessGainDb ?: 0f
-        eqProcessor.updateSettings(eqState, loudness)
+        applyTrackDspSettings(_playbackState.value.currentTrack, eqState)
     }
 
     private fun playTrackInternal(track: Track, resetStandby: Boolean, seekToMs: Long = 0L) {
@@ -351,15 +447,8 @@ class DualPlayerCrossfadeController(
 
         scope.launch {
             val prefs = settingsDataStore.preferencesFlow.first()
-            if (prefs.eqState.autoEqByGenre && prefs.eqState.enabled) {
-                val autoPreset = track.genre.defaultEqPreset
-                eqProcessor.updateSettings(
-                    prefs.eqState.copy(preset = autoPreset, bandGainsDb = autoPreset.gainsDb),
-                    track.loudnessGainDb
-                )
-            } else {
-                eqProcessor.updateSettings(prefs.eqState, track.loudnessGainDb)
-            }
+            applyTrackDspSettings(track, prefs.eqState)
+            launchReplayGainProbeIfNeeded(track)
 
             val mediaUri = resolvePlayableUri(track)
             if (mediaUri == null) {
@@ -381,7 +470,51 @@ class DualPlayerCrossfadeController(
                 trackDao.markPlayed(track.id, System.currentTimeMillis())
                 scrobbleManager.scrobbleTrack(track)
             }
-            logger.log("PLAYER", "INFO", "Đang phát: ${track.title} — ${track.artist} [${track.format.extension}]")
+            logger.log(
+                "PLAYER",
+                "INFO",
+                "Đang phát: ${track.title} — ${track.artist} [${track.format.extension}]"
+            )
+        }
+    }
+
+    private fun launchReplayGainProbeIfNeeded(track: Track) {
+        if (track.loudnessGainDb != 0f && track.bpm > 0) return
+        val localPath = track.localPath ?: return
+        scope.launch(Dispatchers.IO) {
+            val analysis = when {
+                localPath.startsWith("content://") -> {
+                    val bytes = runCatching {
+                        context.contentResolver.openInputStream(Uri.parse(localPath))?.use { stream ->
+                            val buf = ByteArray(256 * 1024)
+                            val n = stream.read(buf)
+                            if (n > 0) buf.copyOf(n) else null
+                        }
+                    }.getOrNull()
+                    if (bytes != null) ReplayGainExtractor.analyzeBytes(bytes, track.title, track.fileName)
+                    else return@launch
+                }
+                localPath.startsWith("file://") -> {
+                    val path = Uri.parse(localPath).path ?: return@launch
+                    ReplayGainExtractor.analyzeFile(File(path), track.title, track.fileName)
+                }
+                else -> ReplayGainExtractor.analyzeFile(File(localPath), track.title, track.fileName)
+            }
+
+            val updatedGain = analysis.replayGainDb ?: track.loudnessGainDb
+            val updatedBpm = if (analysis.bpm > 0) analysis.bpm else track.bpm
+            if (analysis.replayGainDb != null || analysis.bpm > 0) {
+                trackDao.updateTrackAnalysis(track.id, updatedGain, updatedBpm)
+                val updatedTrack = track.copy(loudnessGainDb = updatedGain, bpm = updatedBpm)
+                withContext(Dispatchers.Main) {
+                    val current = _playbackState.value.currentTrack
+                    if (current?.id == track.id) {
+                        val prefs = settingsDataStore.preferencesFlow.first()
+                        _playbackState.value = _playbackState.value.copy(currentTrack = updatedTrack)
+                        applyTrackDspSettings(updatedTrack, prefs.eqState)
+                    }
+                }
+            }
         }
     }
 
@@ -389,12 +522,25 @@ class DualPlayerCrossfadeController(
         if (!track.localPath.isNullOrBlank()) {
             val path = track.localPath
             if (path.startsWith("content://") || path.startsWith("file://")) return path
-            val file = java.io.File(path)
+            val file = File(path)
             if (file.exists()) return Uri.fromFile(file).toString()
         }
         if (track.source == MusicSource.YOUTUBE_MUSIC) {
-            val target = track.youtubeVideoId ?: track.streamUri ?: return null
-            return youTubeRepository.resolveAudioStreamUrl(target).getOrNull()?.streamUrl
+            val videoId = track.youtubeVideoId ?: track.streamUri ?: return null
+            val cached = cacheManager.findValidCachedYouTubeFile(videoId)
+            if (cached != null) {
+                return Uri.fromFile(cached).toString()
+            }
+            val resolvedUrl = youTubeRepository.resolveAudioStreamUrl(videoId).getOrNull()?.streamUrl
+                ?: return null
+            scope.launch(Dispatchers.IO) {
+                cacheManager.cacheYouTubeStream(
+                    track = track,
+                    streamUrl = resolvedUrl,
+                    httpClient = scrobbleManager.getHttpClient()
+                )
+            }
+            return resolvedUrl
         }
         return track.streamUri
     }
@@ -423,10 +569,16 @@ class DualPlayerCrossfadeController(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (isSlotA != activeSlotA) return
                 when (playbackState) {
-                    Player.STATE_BUFFERING -> _playbackState.value = _playbackState.value.copy(isBuffering = true)
+                    Player.STATE_BUFFERING -> {
+                        _playbackState.value = _playbackState.value.copy(isBuffering = true)
+                    }
                     Player.STATE_READY -> {
-                        val dur = player.duration.takeIf { it > 0 } ?: _playbackState.value.currentTrack?.durationMs ?: 0L
-                        _playbackState.value = _playbackState.value.copy(isBuffering = false, durationMs = dur)
+                        val dur = player.duration.takeIf { it > 0 }
+                            ?: _playbackState.value.currentTrack?.durationMs ?: 0L
+                        _playbackState.value = _playbackState.value.copy(
+                            isBuffering = false,
+                            durationMs = dur
+                        )
                     }
                     Player.STATE_ENDED -> {
                         if (!isCrossfading) {
@@ -441,7 +593,6 @@ class DualPlayerCrossfadeController(
                 if (isSlotA != activeSlotA) return
                 val track = _playbackState.value.currentTrack
                 logger.log("DECODER", "ERROR", "Lỗi phát '${track?.title}': ${error.errorCodeName}")
-                // Instant resume: refresh expired YouTube link and seek back
                 if (track != null && track.source == MusicSource.YOUTUBE_MUSIC) {
                     val resumePos = player.currentPosition
                     playTrackInternal(track, resetStandby = true, seekToMs = resumePos)
@@ -456,6 +607,7 @@ class DualPlayerCrossfadeController(
     }
 
     private fun handleTrackEnded() {
+        if (consumeTrackSleepTimerOnEnd()) return
         val state = _playbackState.value
         if (state.repeatMode == RepeatMode.ONE && state.currentTrack != null) {
             playTrackInternal(state.currentTrack, resetStandby = true)
@@ -479,7 +631,6 @@ class DualPlayerCrossfadeController(
                     isPlaying = p.isPlaying
                 )
 
-                // Save playback checkpoint every ~2.5s
                 tickCount++
                 if (tickCount % 10 == 0) {
                     val id = _playbackState.value.currentTrack?.id
@@ -488,9 +639,13 @@ class DualPlayerCrossfadeController(
                     }
                 }
 
-                // Trigger dual-player crossfade if enabled and approaching end
+                // Do not start crossfade if track-based sleep timer expects playback to stop after current track
+                val st = _playbackState.value
+                val shouldStopAfterThisTrack = st.sleepTimerMode == SleepTimerMode.END_OF_CURRENT_TRACK ||
+                    (st.sleepTimerMode == SleepTimerMode.AFTER_N_TRACKS && st.sleepTimerRemainingTracks <= 1)
+
                 val fadeMs = crossfadeOption.seconds * 1000L
-                if (fadeMs > 0L && p.isPlaying && !isCrossfading && dur > fadeMs + 2000L) {
+                if (!shouldStopAfterThisTrack && fadeMs > 0L && p.isPlaying && !isCrossfading && dur > fadeMs + 2000L) {
                     val remaining = dur - pos
                     if (remaining in 400L..fadeMs) {
                         triggerCrossfade(fadeMs)
@@ -538,12 +693,23 @@ class DualPlayerCrossfadeController(
             incoming.volume = 1f
             activeSlotA = !activeSlotA
             isCrossfading = false
+            onActivePlayerChanged?.invoke(activePlayer)
+
+            val updatedTimerLeft = if (_playbackState.value.sleepTimerMode == SleepTimerMode.AFTER_N_TRACKS) {
+                (_playbackState.value.sleepTimerRemainingTracks - 1).coerceAtLeast(1)
+            } else {
+                _playbackState.value.sleepTimerRemainingTracks
+            }
 
             _playbackState.value = _playbackState.value.copy(
                 currentTrack = nextTrack,
                 currentIndex = nextIdx,
-                crossfadeActive = false
+                crossfadeActive = false,
+                sleepTimerRemainingTracks = updatedTimerLeft
             )
+            val prefs = settingsDataStore.preferencesFlow.first()
+            applyTrackDspSettings(nextTrack, prefs.eqState)
+            launchReplayGainProbeIfNeeded(nextTrack)
             launch(Dispatchers.IO) { trackDao.markPlayed(nextTrack.id, System.currentTimeMillis()) }
         }
     }

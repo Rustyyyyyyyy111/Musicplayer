@@ -41,7 +41,8 @@ data class UserPreferences(
     val listenBrainzEnabled: Boolean = false,
     val lastTrackId: String? = null,
     val lastPositionMs: Long = 0L,
-    val activeTelegramAccountId: Int = 0
+    val activeTelegramAccountId: Int = 0,
+    val showLyricsOnLockScreen: Boolean = true
 )
 
 class SettingsDataStore(
@@ -76,6 +77,7 @@ class SettingsDataStore(
         val LAST_TRACK_ID = stringPreferencesKey("last_track_id")
         val LAST_POSITION_MS = longPreferencesKey("last_position_ms")
         val ACTIVE_TG_ACCOUNT = intPreferencesKey("active_tg_account")
+        val SHOW_LYRICS_LOCKSCREEN = booleanPreferencesKey("show_lyrics_lockscreen")
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.musicPrefsDataStore.data.map { prefs ->
@@ -123,7 +125,8 @@ class SettingsDataStore(
             listenBrainzEnabled = prefs[Keys.LISTENBRAINZ_ENABLED] ?: false,
             lastTrackId = prefs[Keys.LAST_TRACK_ID],
             lastPositionMs = prefs[Keys.LAST_POSITION_MS] ?: 0L,
-            activeTelegramAccountId = prefs[Keys.ACTIVE_TG_ACCOUNT] ?: 0
+            activeTelegramAccountId = prefs[Keys.ACTIVE_TG_ACCOUNT] ?: 0,
+            showLyricsOnLockScreen = prefs[Keys.SHOW_LYRICS_LOCKSCREEN] ?: true
         )
     }
 
@@ -219,5 +222,9 @@ class SettingsDataStore(
 
     suspend fun setActiveTelegramAccount(accountId: Int) {
         context.musicPrefsDataStore.edit { it[Keys.ACTIVE_TG_ACCOUNT] = accountId }
+    }
+
+    suspend fun setShowLyricsOnLockScreen(enabled: Boolean) {
+        context.musicPrefsDataStore.edit { it[Keys.SHOW_LYRICS_LOCKSCREEN] = enabled }
     }
 }

@@ -15,6 +15,7 @@ import com.example.core.util.ActivityLogger
 import com.example.core.util.AudioFormatDetector
 import com.example.core.util.AutoGenreClassifier
 import com.example.core.util.DuplicateDetector
+import com.example.core.util.ReplayGainExtractor
 import com.example.core.util.VietnameseTextNormalizer
 import com.example.data.local.SettingsDataStore
 import com.example.data.local.TrackDao
@@ -92,6 +93,20 @@ class OfflineMusicRepository(
                         ?: "Offline"
                     val bitrate = if (bitrateCol >= 0) (cursor.getInt(bitrateCol) / 1000) else 0
                     val genre = AutoGenreClassifier.classify(title, artist, album, displayName)
+                    val tagAnalysis = runCatching {
+                        context.contentResolver.openInputStream(contentUri)?.use { stream ->
+                            val buf = ByteArray(128 * 1024)
+                            var totalRead = 0
+                            while (totalRead < buf.size) {
+                                val r = stream.read(buf, totalRead, buf.size - totalRead)
+                                if (r <= 0) break
+                                totalRead += r
+                            }
+                            if (totalRead > 0) {
+                                ReplayGainExtractor.analyzeBytes(buf.copyOf(totalRead), title, displayName)
+                            } else null
+                        }
+                    }.getOrNull()
 
                     val track = Track(
                         id = "offline_ms_$mediaId",
@@ -112,7 +127,9 @@ class OfflineMusicRepository(
                         genre = genre,
                         downloadStatus = DownloadStatus.COMPLETED,
                         downloadProgress = 1f,
-                        dateAddedEpochMs = cursor.getLong(dateCol) * 1000L
+                        dateAddedEpochMs = cursor.getLong(dateCol) * 1000L,
+                        loudnessGainDb = tagAnalysis?.replayGainDb ?: 0f,
+                        bpm = tagAnalysis?.bpm ?: ReplayGainExtractor.extractBpmFromText(title, displayName)
                     )
                     discovered += track
                 }
@@ -206,6 +223,7 @@ class OfflineMusicRepository(
         runCatching { retriever.release() }
 
         val hash = if (file.length() <= 60L * 1024 * 1024) DuplicateDetector.computeSha256(file) else null
+        val analysis = ReplayGainExtractor.analyzeFile(file, title, file.name)
         return Track(
             id = "offline_file_${file.absolutePath.hashCode()}",
             title = title,
@@ -225,7 +243,9 @@ class OfflineMusicRepository(
             genre = AutoGenreClassifier.classify(title, artist, album, file.name),
             downloadStatus = DownloadStatus.COMPLETED,
             downloadProgress = 1f,
-            dateAddedEpochMs = file.lastModified()
+            dateAddedEpochMs = file.lastModified(),
+            loudnessGainDb = analysis.replayGainDb ?: 0f,
+            bpm = analysis.bpm
         )
     }
 }

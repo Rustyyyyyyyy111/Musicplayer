@@ -53,6 +53,18 @@ interface TrackDao {
     @Query("UPDATE tracks SET downloadStatus = :status, downloadProgress = :progress, localPath = :localPath WHERE id = :trackId")
     suspend fun updateDownloadState(trackId: String, status: String, progress: Float, localPath: String?)
 
+    @Query("UPDATE tracks SET loudnessGainDb = :loudnessGainDb, bpm = CASE WHEN :bpm > 0 THEN :bpm ELSE bpm END WHERE id = :trackId")
+    suspend fun updateTrackAnalysis(trackId: String, loudnessGainDb: Float, bpm: Int)
+
+    @Query("SELECT * FROM tracks WHERE lastPlayedEpochMs = 0 OR lastPlayedEpochMs < :cutoffEpochMs ORDER BY dateAddedEpochMs DESC")
+    fun observeNotPlayedIn30Days(cutoffEpochMs: Long): Flow<List<TrackEntity>>
+
+    @Query("SELECT * FROM tracks WHERE lastPlayedEpochMs >= :monthStartEpochMs AND playCount > 0 ORDER BY playCount DESC, lastPlayedEpochMs DESC LIMIT 50")
+    fun observeMostPlayedThisMonth(monthStartEpochMs: Long): Flow<List<TrackEntity>>
+
+    @Query("SELECT * FROM tracks WHERE bpm > 130 ORDER BY bpm DESC, playCount DESC")
+    fun observeHighEnergyOver130Bpm(): Flow<List<TrackEntity>>
+
     @Query("DELETE FROM tracks WHERE id = :trackId")
     suspend fun deleteTrackById(trackId: String)
 }
@@ -147,6 +159,12 @@ interface DownloadCacheDao {
 
     @Query("SELECT COALESCE(SUM(sizeBytes), 0) FROM cache_entries WHERE isPermanentOffline = 0")
     fun observeTemporaryCacheSizeBytes(): Flow<Long>
+
+    @Query("SELECT * FROM cache_entries WHERE `key` = :key LIMIT 1")
+    suspend fun getCacheEntry(key: String): CacheEntryEntity?
+
+    @Query("UPDATE cache_entries SET lastAccessedEpochMs = :timestamp WHERE `key` = :key")
+    suspend fun touchCacheEntry(key: String, timestamp: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCacheEntry(entry: CacheEntryEntity)

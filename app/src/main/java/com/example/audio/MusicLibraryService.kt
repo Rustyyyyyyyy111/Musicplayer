@@ -1,26 +1,50 @@
 package com.example.audio
 
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.example.MainActivity
 import com.example.MusicPlayerApplication
+import com.example.core.model.LyricLine
 import com.example.core.model.Track
 import com.example.core.util.VietnameseTextNormalizer
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 @UnstableApi
 class MusicLibraryService : MediaLibraryService() {
 
     private var mediaLibrarySession: MediaLibrarySession? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    @Volatile
+    private var currentLyricLine: String? = null
+
+    @Volatile
+    private var showLyricsOnLockScreen: Boolean = true
+
+    private var cachedLyricsTrackId: String? = null
+    private var cachedLyricsLines: List<LyricLine> = emptyList()
+    private var lyricsLoadJob: Job? = null
 
     companion object {
         private const val ROOT_ID = "root"
@@ -37,6 +61,8 @@ class MusicLibraryService : MediaLibraryService() {
         val app = application as MusicPlayerApplication
         val controller = app.container.playerController
 
+        setMediaNotificationProvider(LyricsMediaNotificationProvider(this))
+
         val launchIntent = Intent(this, MainActivity::class.java)
         val sessionActivityPendingIntent = PendingIntent.getActivity(
             this,
@@ -45,13 +71,83 @@ class MusicLibraryService : MediaLibraryService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val forwardingPlayer = LyricsForwardingPlayer(controller.activePlayer)
         mediaLibrarySession = MediaLibrarySession.Builder(
             this,
-            controller.activePlayer,
+            forwardingPlayer,
             LibraryCallback()
         )
             .setSessionActivity(sessionActivityPendingIntent)
             .build()
+
+        controller.onActivePlayerChanged = { newPlayer ->
+            mediaLibrarySession?.player = LyricsForwardingPlayer(newPlayer)
+        }
+
+        observeLockScreenLyricPreferences(app)
+        observePlaybackForSyncedLyrics(app)
+    }
+
+    private fun observeLockScreenLyricPreferences(app: MusicPlayerApplication) {
+        serviceScope.launch {
+            app.container.settingsDataStore.preferencesFlow
+                .map { it.showLyricsOnLockScreen }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    showLyricsOnLockScreen = enabled
+                    if (!enabled) {
+                        currentLyricLine = null
+                    }
+                    triggerNotificationUpdate()
+                }
+        }
+    }
+
+    private fun observePlaybackForSyncedLyrics(app: MusicPlayerApplication) {
+        serviceScope.launch {
+            app.container.playerController.playbackState.collect { state ->
+                val track = state.currentTrack
+                if (track == null) {
+                    if (currentLyricLine != null) {
+                        currentLyricLine = null
+                        triggerNotificationUpdate()
+                    }
+                    return@collect
+                }
+
+                if (cachedLyricsTrackId != track.id) {
+                    cachedLyricsTrackId = track.id
+                    cachedLyricsLines = emptyList()
+                    if (currentLyricLine != null) {
+                        currentLyricLine = null
+                        triggerNotificationUpdate()
+                    }
+                    lyricsLoadJob?.cancel()
+                    lyricsLoadJob = launch(Dispatchers.IO) {
+                        val res = app.container.lyricsEngine.loadLyricsForTrack(track)
+                        cachedLyricsLines = res?.lines.orEmpty()
+                    }
+                }
+
+                if (!showLyricsOnLockScreen || cachedLyricsLines.isEmpty()) {
+                    if (currentLyricLine != null) {
+                        currentLyricLine = null
+                        triggerNotificationUpdate()
+                    }
+                    return@collect
+                }
+
+                val activeText = cachedLyricsLines
+                    .lastOrNull { it.timestampMs <= state.positionMs }
+                    ?.text
+                    ?.takeIf { it.isNotBlank() }
+
+                if (activeText != currentLyricLine) {
+                    currentLyricLine = activeText
+                    triggerNotificationUpdate()
+                }
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
@@ -59,11 +155,54 @@ class MusicLibraryService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        val app = application as? MusicPlayerApplication
+        app?.container?.playerController?.onActivePlayerChanged = null
+        lyricsLoadJob?.cancel()
+        serviceScope.cancel()
         mediaLibrarySession?.run {
             release()
             mediaLibrarySession = null
         }
         super.onDestroy()
+    }
+
+    /**
+     * Custom MediaNotification.Provider that projects the live synchronized `.lrc` line
+     * directly onto the Android MediaStyle Notification & Lock Screen media card.
+     */
+    private inner class LyricsMediaNotificationProvider(context: Context) :
+        DefaultMediaNotificationProvider(context) {
+
+        override fun getNotificationContentTitle(metadata: MediaMetadata): CharSequence? {
+            return super.getNotificationContentTitle(metadata)
+        }
+
+        override fun getNotificationContentText(metadata: MediaMetadata): CharSequence? {
+            val lyric = currentLyricLine
+            return if (showLyricsOnLockScreen && !lyric.isNullOrBlank()) {
+                "♪ $lyric"
+            } else {
+                super.getNotificationContentText(metadata)
+            }
+        }
+    }
+
+    /**
+     * Non-destructive ForwardingPlayer that enriches MediaSession metadata with the active
+     * synced lyric subtitle without modifying ExoPlayer's active MediaItem.
+     */
+    private inner class LyricsForwardingPlayer(player: Player) : ForwardingPlayer(player) {
+        override fun getMediaMetadata(): MediaMetadata {
+            val base = super.getMediaMetadata()
+            val lyric = currentLyricLine
+            return if (showLyricsOnLockScreen && !lyric.isNullOrBlank()) {
+                base.buildUpon()
+                    .setSubtitle("♪ $lyric")
+                    .build()
+            } else {
+                base
+            }
+        }
     }
 
     private inner class LibraryCallback : MediaLibrarySession.Callback {

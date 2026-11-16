@@ -96,6 +96,38 @@ enum class CacheLimitOption(val bytes: Long, val labelVi: String) {
     CUSTOM(4L * 1024 * 1024 * 1024, "Tùy chỉnh")
 }
 
+enum class SleepTimerMode(val labelVi: String) {
+    OFF("Tắt"),
+    AFTER_MINUTES("Tắt sau N phút"),
+    END_OF_CURRENT_TRACK("Tắt sau bài hát hiện tại"),
+    AFTER_N_TRACKS("Tắt sau N bài tiếp theo")
+}
+
+enum class SmartPlaylistType(val id: String, val titleVi: String, val descriptionVi: String) {
+    NOT_PLAYED_30_DAYS(
+        id = "smart_not_played_30d",
+        titleVi = "Chưa nghe trong 30 ngày qua",
+        descriptionVi = "Những bài hát chưa được phát lại trong vòng 30 ngày gần đây"
+    ),
+    MOST_PLAYED_THIS_MONTH(
+        id = "smart_most_played_month",
+        titleVi = "Nghe nhiều nhất trong tháng",
+        descriptionVi = "Bảng xếp hạng bài hát bạn nghe nhiều nhất tháng này"
+    ),
+    HIGH_ENERGY_130_BPM(
+        id = "smart_high_energy_130bpm",
+        titleVi = "Nhạc sôi động (>130 BPM)",
+        descriptionVi = "Các bản nhạc tiết tấu nhanh trên 130 nhịp mỗi phút"
+    )
+}
+
+enum class UnifiedSearchTab(val labelVi: String) {
+    ALL("Tất cả"),
+    OFFLINE("Thư viện Offline"),
+    TELEGRAM("Telegram"),
+    YOUTUBE_MUSIC("YouTube Music")
+}
+
 enum class LibraryCategory(val labelVi: String) {
     ALL_SONGS("Tất cả bài hát"),
     ARTISTS("Nghệ sĩ"),
@@ -141,7 +173,8 @@ data class Track(
     val dateAddedEpochMs: Long = System.currentTimeMillis(),
     val lastPlayedEpochMs: Long = 0L,
     val playCount: Int = 0,
-    val loudnessGainDb: Float = 0f
+    val loudnessGainDb: Float = 0f,
+    val bpm: Int = 0
 )
 
 data class ArtistGroup(

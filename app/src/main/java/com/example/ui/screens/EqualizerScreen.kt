@@ -332,9 +332,11 @@ fun EqualizerScreen(
 
                     Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(colors.divider))
 
+                    val rgSign = if (playback.effectiveReplayGainDb > 0f) "+" else ""
+                    val rgVal = (playback.effectiveReplayGainDb * 10f).roundToInt() / 10f
                     EqOptionSwitchRow(
-                        title = "Chuẩn hóa âm lượng (Loudness EBU R128)",
-                        subtitle = "Cân bằng âm lượng giữa các nguồn Telegram, YouTube và Offline",
+                        title = "Chuẩn hóa âm lượng (ReplayGain / EBU R128)",
+                        subtitle = "Cân bằng âm lượng Telegram, YouTube & Offline (Hiện tại: $rgSign$rgVal dB)",
                         checked = eq.loudnessNormalization,
                         onCheckedChange = { viewModel.updateEqState(eq.copy(loudnessNormalization = it)) }
                     )
