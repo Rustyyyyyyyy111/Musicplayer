@@ -2,5 +2,5 @@
 <paths>
     <cache-path name="shared_logs" path="logs/" />
     <files-path name="exports" path="exports/" />
-    <external-path name="music_player_root" path="Music/Music Player/" />
+    <external-path name="music_player_root" path="Music/Musicplayer/" />
 </paths>

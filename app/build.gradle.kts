@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "com.laughing.musicplayer"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.musicplayer.vnqmpx"
+    applicationId = "com.laughing.musicplayer"
     minSdk = 24
     targetSdk = 36
     versionCode = 1

@@ -13,8 +13,8 @@
     <string name="source_offline">Offline</string>
 
     <!-- Actions -->
-    <string name="action_download_offline">Tải về nghe offline</string>
-    <string name="action_download_youtube">Tải xuống</string>
+    <string name="action_download_offline">Tải về</string>
+    <string name="action_download_youtube">Tải về</string>
     <string name="action_play">Phát</string>
     <string name="action_pause">Tạm dừng</string>
     <string name="action_next">Bài tiếp theo</string>
@@ -39,7 +39,7 @@
     <string name="cat_genres">Thể loại</string>
     <string name="cat_playlists">Playlist</string>
     <string name="cat_favorites">Yêu thích</string>
-    <string name="cat_downloaded">Đã tải xuống</string>
+    <string name="cat_downloaded">Đã lưu</string>
     <string name="cat_recent">Gần đây</string>
     <string name="cat_duplicates">Quản lý trùng lặp</string>
 
@@ -62,10 +62,8 @@
     <string name="settings_theme_liquid_glass">Liquid Glass</string>
 
     <string name="settings_sec_sources">Nguồn nhạc</string>
-    <string name="settings_tg_account">Tài khoản Telegram</string>
-    <string name="settings_tg_channels">Chọn kênh lấy nhạc</string>
-    <string name="settings_tg_groups">Chọn nhóm lấy nhạc</string>
-    <string name="settings_tg_chats">Chọn cuộc trò chuyện</string>
+    <string name="settings_tg_login">Đăng nhập</string>
+    <string name="settings_tg_sources">Chọn kênh / nhóm / trò chuyện lấy nhạc</string>
     <string name="settings_yt_music">YouTube Music</string>
     <string name="settings_auto_sync">Đồng bộ tự động</string>
 
@@ -82,13 +80,12 @@
     <string name="settings_cache_limit">Giới hạn cache</string>
     <string name="settings_preload_next">Tự tải trước</string>
     <string name="settings_clear_cache">Dọn bộ đệm</string>
-    <string name="settings_manage_offline">Quản lý bài tải offline</string>
+    <string name="settings_manage_offline">Quản lý bài tải</string>
 
     <string name="settings_sec_system">Hệ thống</string>
     <string name="settings_activity_logs">Nhật ký hoạt động</string>
     <string name="settings_export_logs">Xuất log</string>
     <string name="settings_version_info">Thông tin phiên bản</string>
-    <string name="settings_app_update">Cập nhật ứng dụng</string>
 
     <!-- Crossfade -->
     <string name="crossfade_off">Tắt</string>
