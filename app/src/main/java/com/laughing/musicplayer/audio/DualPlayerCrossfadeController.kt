@@ -8,6 +8,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -473,15 +474,15 @@ class DualPlayerCrossfadeController(
             applyTrackDspSettings(track, prefs.eqState)
             launchReplayGainProbeIfNeeded(track)
 
-            val uriResult = try {
+            val resolvedResult = try {
                 withTimeout(9_000L) {
-                    resolvePlayableUri(track)
+                    resolvePlayableMedia(track)
                 }
             } catch (_: TimeoutCancellationException) {
                 Result.failure(IllegalStateException("Hết thời gian tải '${track.title}' (quá 9 giây)"))
             }
 
-            val mediaUri = uriResult.getOrElse { err ->
+            val resolvedMedia = resolvedResult.getOrElse { err ->
                 _playbackState.value = _playbackState.value.copy(
                     isBuffering = false,
                     isPlaying = false,
@@ -490,7 +491,19 @@ class DualPlayerCrossfadeController(
                 return@launch
             }
 
-            val item = buildMediaItem(track, mediaUri)
+            val resolvedTrack = resolvedMedia.updatedTrack
+            if (resolvedTrack != track) {
+                val updatedQueue = _playbackState.value.queue.map { q ->
+                    if (q.id == resolvedTrack.id) resolvedTrack else q
+                }
+                _playbackState.value = _playbackState.value.copy(
+                    currentTrack = resolvedTrack,
+                    queue = updatedQueue,
+                    durationMs = resolvedTrack.durationMs.takeIf { it > 0 } ?: _playbackState.value.durationMs
+                )
+            }
+
+            val item = buildMediaItem(resolvedTrack, resolvedMedia.uri, resolvedMedia.mimeType)
             onEnsureMediaSessionConnected?.invoke()
             activePlayer.volume = 1f
             activePlayer.setMediaItem(item)
@@ -499,7 +512,7 @@ class DualPlayerCrossfadeController(
             activePlayer.play()
 
             launch(Dispatchers.IO) {
-                trackDao.markPlayed(track.id, System.currentTimeMillis())
+                trackDao.markPlayed(resolvedTrack.id, System.currentTimeMillis())
             }
             logger.log(
                 "PLAYER",
@@ -549,36 +562,78 @@ class DualPlayerCrossfadeController(
         }
     }
 
-    private suspend fun resolvePlayableUri(track: Track): Result<String> {
+    private data class ResolvedPlayableMedia(
+        val uri: String,
+        val updatedTrack: Track,
+        val mimeType: String? = null
+    )
+
+    private suspend fun resolvePlayableMedia(track: Track): Result<ResolvedPlayableMedia> {
         if (!track.localPath.isNullOrBlank()) {
             val path = track.localPath
-            if (path.startsWith("content://") || path.startsWith("file://")) return Result.success(path)
+            if (path.startsWith("content://") || path.startsWith("file://")) {
+                return Result.success(ResolvedPlayableMedia(path, track))
+            }
             val file = File(path)
-            if (file.exists()) return Result.success(Uri.fromFile(file).toString())
+            if (file.exists()) {
+                return Result.success(ResolvedPlayableMedia(Uri.fromFile(file).toString(), track))
+            }
         }
         if (track.source == MusicSource.YOUTUBE_MUSIC) {
             val videoId = track.youtubeVideoId ?: track.streamUri
                 ?: return Result.failure(IllegalStateException("Thiếu ID bài hát YouTube Music"))
             val cached = cacheManager.findValidCachedYouTubeFile(videoId)
             if (cached != null) {
-                return Result.success(Uri.fromFile(cached).toString())
+                val cachedFormat = if (cached.extension.equals("opus", ignoreCase = true) ||
+                    cached.extension.equals("webm", ignoreCase = true)
+                ) {
+                    com.laughing.musicplayer.core.model.AudioFormat.OPUS
+                } else {
+                    track.format
+                }
+                val cachedSampleRate = if (cachedFormat == com.laughing.musicplayer.core.model.AudioFormat.OPUS) 48000 else track.sampleRateHz
+                val updated = track.copy(format = cachedFormat, sampleRateHz = cachedSampleRate)
+                return Result.success(ResolvedPlayableMedia(Uri.fromFile(cached).toString(), updated))
             }
-            val resolved = youTubeRepository.resolveAudioStreamUrl(videoId)
-            val resolvedUrl = resolved.getOrElse { err ->
+            val resolved = youTubeRepository.resolveAudioStreamUrl(videoId).getOrElse { err ->
                 return Result.failure(err)
-            }.streamUrl
+            }
+            val updatedTrack = track.copy(
+                format = resolved.format,
+                bitrateKbps = resolved.bitrateKbps,
+                sampleRateHz = resolved.sampleRateHz,
+                durationMs = resolved.durationMs.takeIf { it > 0 } ?: track.durationMs,
+                artworkUri = track.artworkUri ?: resolved.artworkUrl,
+                fileName = "${track.title}.${resolved.format.extension}"
+            )
             scope.launch(Dispatchers.IO) {
+                trackDao.updateTrackAudioSpecs(
+                    trackId = updatedTrack.id,
+                    format = updatedTrack.format.name,
+                    fileName = updatedTrack.fileName,
+                    artworkUri = updatedTrack.artworkUri,
+                    bitrateKbps = updatedTrack.bitrateKbps,
+                    sampleRateHz = updatedTrack.sampleRateHz,
+                    bitDepth = updatedTrack.bitDepth,
+                    durationMs = updatedTrack.durationMs
+                )
                 cacheManager.cacheYouTubeStream(
-                    track = track,
-                    streamUrl = resolvedUrl,
+                    track = updatedTrack,
+                    streamUrl = resolved.streamUrl,
                     httpClient = proxyManager.getStreamHttpClient()
                 )
             }
-            return Result.success(resolvedUrl)
+            val containerMime = when {
+                resolved.mimeType.contains("webm", ignoreCase = true) -> MimeTypes.AUDIO_WEBM
+                resolved.mimeType.contains("ogg", ignoreCase = true) -> MimeTypes.AUDIO_OGG
+                resolved.mimeType.contains("mp4", ignoreCase = true) -> MimeTypes.AUDIO_MP4
+                else -> null
+            }
+            return Result.success(ResolvedPlayableMedia(resolved.streamUrl, updatedTrack, containerMime))
         }
         val uri = track.streamUri
             ?: return Result.failure(IllegalStateException("Không tìm thấy luồng phát cho '${track.title}'"))
-        return Result.success(uri)
+        return Result.success(ResolvedPlayableMedia(uri, track))
     }
 
     private fun toArtworkUri(raw: String?): Uri? {
@@ -586,7 +641,7 @@ class DualPlayerCrossfadeController(
         return if (raw.startsWith("/")) Uri.fromFile(File(raw)) else Uri.parse(raw)
     }
 
-    private fun buildMediaItem(track: Track, uri: String): MediaItem {
+    private fun buildMediaItem(track: Track, uri: String, mimeType: String? = null): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(track.title)
             .setArtist(track.artist)
@@ -596,6 +651,9 @@ class DualPlayerCrossfadeController(
         return MediaItem.Builder()
             .setMediaId(track.id)
             .setUri(uri)
+            .apply {
+                if (!mimeType.isNullOrBlank()) setMimeType(mimeType)
+            }
             .setMediaMetadata(metadata)
             .build()
     }
@@ -736,20 +794,21 @@ class DualPlayerCrossfadeController(
         isCrossfading = true
 
         scope.launch {
-            val nextUri = try {
-                withTimeout(9_000L) { resolvePlayableUri(nextTrack).getOrNull() }
+            val resolvedNext = try {
+                withTimeout(9_000L) { resolvePlayableMedia(nextTrack).getOrNull() }
             } catch (_: TimeoutCancellationException) {
                 null
             }
-            if (nextUri == null) {
+            if (resolvedNext == null) {
                 isCrossfading = false
                 return@launch
             }
+            val resolvedNextTrack = resolvedNext.updatedTrack
             val outgoing = activePlayer
             val incoming = standbyPlayer
 
             incoming.volume = 0f
-            incoming.setMediaItem(buildMediaItem(nextTrack, nextUri))
+            incoming.setMediaItem(buildMediaItem(resolvedNextTrack, resolvedNext.uri, resolvedNext.mimeType))
             incoming.prepare()
             incoming.play()
 
@@ -779,15 +838,15 @@ class DualPlayerCrossfadeController(
             }
 
             _playbackState.value = _playbackState.value.copy(
-                currentTrack = nextTrack,
+                currentTrack = resolvedNextTrack,
                 currentIndex = nextIdx,
                 crossfadeActive = false,
                 sleepTimerRemainingTracks = updatedTimerLeft
             )
             val prefs = settingsDataStore.preferencesFlow.first()
-            applyTrackDspSettings(nextTrack, prefs.eqState)
-            launchReplayGainProbeIfNeeded(nextTrack)
-            launch(Dispatchers.IO) { trackDao.markPlayed(nextTrack.id, System.currentTimeMillis()) }
+            applyTrackDspSettings(resolvedNextTrack, prefs.eqState)
+            launchReplayGainProbeIfNeeded(resolvedNextTrack)
+            launch(Dispatchers.IO) { trackDao.markPlayed(resolvedNextTrack.id, System.currentTimeMillis()) }
         }
     }
 

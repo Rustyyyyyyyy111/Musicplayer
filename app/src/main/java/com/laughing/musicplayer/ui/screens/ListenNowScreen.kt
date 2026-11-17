@@ -2,7 +2,6 @@ package com.laughing.musicplayer.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,12 +13,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DirectionsCar
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,11 +32,7 @@ import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 
 @Composable
-fun ListenNowScreen(
-    viewModel: MusicPlayerViewModel,
-    onOpenCarMode: () -> Unit,
-    onOpenEqualizer: () -> Unit
-) {
+fun ListenNowScreen(viewModel: MusicPlayerViewModel) {
     val colors = LocalMusicPlayerColors.current
     val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
     val recentTracks by viewModel.recentTracks.collectAsStateWithLifecycle()
@@ -50,55 +42,25 @@ fun ListenNowScreen(
         modifier = Modifier
             .fillMaxSize()
             .testTag("listen_now_screen"),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 160.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+        contentPadding = PaddingValues(top = 12.dp, bottom = 160.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Nghe nhạc",
-                        style = MaterialTheme.typography.displayLarge,
-                        color = colors.textPrimary
-                    )
-                    Text(
-                        text = "Trải nghiệm âm thanh lossless & đám mây",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.textSecondary
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable(onClick = onOpenEqualizer)
-                            .testTag("quick_eq_btn"),
-                        color = colors.cardSurface,
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.GraphicEq, contentDescription = "Equalizer", tint = colors.accent)
-                        }
-                    }
-                    Surface(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable(onClick = onOpenCarMode)
-                            .testTag("quick_car_mode_btn"),
-                        color = colors.cardSurface,
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.DirectionsCar, contentDescription = "Chế độ xe", tint = colors.textPrimary)
-                        }
-                    }
-                }
+                Text(
+                    text = "Nghe nhạc",
+                    style = MaterialTheme.typography.displayLarge,
+                    color = colors.textPrimary
+                )
+                Text(
+                    text = "Trải nghiệm âm thanh lossless & đám mây",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textSecondary
+                )
             }
         }
 
@@ -107,7 +69,9 @@ fun ListenNowScreen(
         if (showcaseTracks.isNotEmpty()) {
             item {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -140,7 +104,10 @@ fun ListenNowScreen(
             }
         } else {
             item {
-                AppleCard(cornerRadius = 22.dp) {
+                AppleCard(
+                    cornerRadius = 22.dp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                ) {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,

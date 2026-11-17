@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
@@ -33,9 +34,7 @@ import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -445,199 +444,168 @@ fun TrackRowItem(
     val colors = LocalMusicPlayerColors.current
     var menuExpanded by remember { mutableStateOf(false) }
 
-    Surface(
+    val quality = remember(track.format, track.bitrateKbps, track.sampleRateHz, track.bitDepth) {
+        track.toAudioQualityDisplay()
+    }
+    val metadataLine = remember(track.artist, track.telegramTopicName, quality) {
+        buildString {
+            append(track.artist)
+            if (!track.telegramTopicName.isNullOrBlank()) {
+                append(" • ")
+                append(track.telegramTopicName)
+            }
+            append(" • ")
+            if (quality.isLossless) append("Lossless • ")
+            append(quality.formatBadge)
+            if (quality.specText.isNotBlank()) {
+                append(" • ")
+                append(quality.specText)
+            }
+        }
+    }
+
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            .background(if (isCurrent) colors.accent.copy(alpha = 0.12f) else Color.Transparent)
             .clickable(onClick = onPlay)
-            .testTag("track_row_${track.id}"),
-        shape = RoundedCornerShape(18.dp),
-        color = if (isCurrent) colors.accent.copy(alpha = 0.14f) else colors.cardSurface,
-        border = if (colors.themeMode == ThemeMode.LIQUID_GLASS) BorderStroke(0.5.dp, colors.glassStroke) else null
+            .testTag("track_row_${track.id}")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             ArtworkImage(
                 artworkUri = track.artworkUri,
                 contentDescription = track.title,
-                modifier = Modifier.size(52.dp),
-                cornerRadius = 12.dp
+                modifier = Modifier.size(48.dp),
+                cornerRadius = 8.dp
             )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 12.dp, end = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
                 Text(
                     text = track.title,
                     style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
                     color = if (isCurrent) colors.accent else colors.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                val quality = remember(track.format, track.bitrateKbps, track.sampleRateHz, track.bitDepth) {
-                    track.toAudioQualityDisplay()
-                }
-                val subtitle = buildString {
-                    append(track.artist)
-                    if (!track.telegramTopicName.isNullOrBlank()) {
-                        append(" • ")
-                        append(track.telegramTopicName)
-                    }
-                    if (track.bpm > 0) append(" • ${track.bpm} BPM")
-                }
                 Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = metadataLine,
+                    style = MaterialTheme.typography.bodySmall,
                     color = colors.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val qualityLabel = buildString {
-                        if (quality.isLossless) append("Lossless • ")
-                        append(quality.formatBadge)
-                        if (quality.specText.isNotBlank()) append(" • ${quality.specText}")
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = colors.elevatedSurface.copy(alpha = if (colors.themeMode == ThemeMode.LIQUID_GLASS) 0.55f else 0.8f)
-                    ) {
-                        Text(
-                            text = qualityLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (quality.isLossless) colors.accent else colors.textSecondary,
-                            fontWeight = if (quality.isLossless) FontWeight.SemiBold else FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                    if (track.source != MusicSource.OFFLINE) {
-                        when (track.downloadStatus) {
-                            DownloadStatus.COMPLETED -> {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Filled.CloudDone,
-                                        contentDescription = "Đã lưu",
-                                        tint = colors.accent,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Đã lưu",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = colors.accent
-                                    )
-                                }
-                            }
-                            DownloadStatus.DOWNLOADING -> {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(
-                                        progress = { track.downloadProgress },
-                                        modifier = Modifier.size(14.dp),
-                                        strokeWidth = 2.dp,
-                                        color = colors.accent
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Đang tải ${(track.downloadProgress * 100).toInt()}%",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = colors.textSecondary
-                                    )
-                                }
-                            }
-                            else -> {
-                                val buttonLabel = "Tải về"
-                                Surface(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable(onClick = onDownload)
-                                        .testTag("download_btn_${track.id}"),
-                                    color = colors.accent.copy(alpha = 0.14f),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Download,
-                                            contentDescription = buttonLabel,
-                                            tint = colors.accent,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = buttonLabel,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = colors.accent
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
-            IconButton(
-                onClick = onToggleFavorite,
-                modifier = Modifier.size(44.dp)
-            ) {
-                Icon(
-                    imageVector = if (track.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                    contentDescription = "Yêu thích",
-                    tint = if (track.isFavorite) colors.accent else colors.textSecondary
-                )
-            }
-            Box {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
-                    onClick = { menuExpanded = true },
-                    modifier = Modifier.size(44.dp)
+                    onClick = onToggleFavorite,
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.MoreVert,
-                        contentDescription = "Tùy chọn bài hát",
-                        tint = colors.textSecondary
+                        imageVector = if (track.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = "Yêu thích",
+                        tint = if (track.isFavorite) colors.accent else colors.textSecondary,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Thêm vào phát tiếp theo") },
-                        leadingIcon = { Icon(Icons.Filled.QueueMusic, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onAddToQueue()
-                        }
-                    )
-                    if (onEditGenre != null) {
-                        DropdownMenuItem(
-                            text = { Text("Đổi thể loại (${track.genre.displayNameVi})") },
-                            onClick = {
-                                menuExpanded = false
-                                onEditGenre()
-                            }
+                Box {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        modifier = Modifier.size(48.dp).testTag("track_menu_${track.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "Tùy chọn bài hát",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                    if (track.downloadStatus == DownloadStatus.COMPLETED || track.source == MusicSource.OFFLINE) {
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
                         DropdownMenuItem(
-                            text = { Text("Xóa bản cục bộ") },
-                            leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null) },
+                            text = { Text("Thêm vào phát tiếp theo") },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
                             onClick = {
                                 menuExpanded = false
-                                onDeleteLocal()
+                                onAddToQueue()
                             }
                         )
+                        if (track.source != MusicSource.OFFLINE) {
+                            when (track.downloadStatus) {
+                                DownloadStatus.COMPLETED -> {
+                                    DropdownMenuItem(
+                                        text = { Text("Đã lưu (${track.format.extension.uppercase()})") },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled.CloudDone,
+                                                contentDescription = null,
+                                                tint = colors.accent
+                                            )
+                                        },
+                                        enabled = false,
+                                        onClick = { menuExpanded = false }
+                                    )
+                                }
+                                DownloadStatus.DOWNLOADING -> {
+                                    DropdownMenuItem(
+                                        text = { Text("Đang tải ${(track.downloadProgress * 100).toInt()}%") },
+                                        leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                                        enabled = false,
+                                        onClick = { menuExpanded = false }
+                                    )
+                                }
+                                else -> {
+                                    DropdownMenuItem(
+                                        text = { Text("Tải về") },
+                                        leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                                        modifier = Modifier.testTag("download_btn_${track.id}"),
+                                        onClick = {
+                                            menuExpanded = false
+                                            onDownload()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        if (onEditGenre != null) {
+                            DropdownMenuItem(
+                                text = { Text("Đổi thể loại (${track.genre.displayNameVi})") },
+                                onClick = {
+                                    menuExpanded = false
+                                    onEditGenre()
+                                }
+                            )
+                        }
+                        if (track.downloadStatus == DownloadStatus.COMPLETED || track.source == MusicSource.OFFLINE) {
+                            DropdownMenuItem(
+                                text = { Text("Xóa bản cục bộ") },
+                                leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onDeleteLocal()
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
+        androidx.compose.material3.HorizontalDivider(
+            thickness = 0.5.dp,
+            color = colors.divider.copy(alpha = 0.45f),
+            modifier = Modifier.padding(start = 76.dp, end = 16.dp)
+        )
     }
 }
 

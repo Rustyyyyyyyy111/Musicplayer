@@ -16,6 +16,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
@@ -31,30 +33,43 @@ class YouTubeDownloadManager(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val downloadSemaphore = Semaphore(3)
+
+    fun downloadPlaylist(tracks: List<Track>): Int {
+        val eligible = tracks.filter {
+            it.source == MusicSource.YOUTUBE_MUSIC &&
+                it.downloadStatus != DownloadStatus.COMPLETED &&
+                it.downloadStatus != DownloadStatus.DOWNLOADING
+        }
+        eligible.forEach { track -> downloadTrack(track) }
+        return eligible.size
+    }
 
     fun downloadTrack(track: Track) {
         val taskId = "dl_${track.id}"
         activeJobs[taskId]?.cancel()
 
         val job = scope.launch {
-            trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, 0f, null)
-            val resolved = youTubeRepository.resolveAudioStreamUrl(
-                track.youtubeVideoId ?: track.streamUri ?: return@launch
-            ).getOrElse { err ->
-                markFailed(taskId, track, err.message ?: "Không lấy được luồng âm thanh")
-                return@launch
-            }
+            trackDao.updateDownloadState(track.id, DownloadStatus.QUEUED.name, 0f, null)
+            downloadSemaphore.withPermit {
+                trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, 0f, null)
+                val resolved = youTubeRepository.resolveAudioStreamUrl(
+                    track.youtubeVideoId ?: track.streamUri ?: return@withPermit
+                ).getOrElse { err ->
+                    markFailed(taskId, track, err.message ?: "Không lấy được luồng âm thanh")
+                    return@withPermit
+                }
 
-            val ext = resolved.format.extension
-            val targetName = storageManager.sanitizeFileName("${track.artist} - ${track.title}.$ext")
-            val tempFile = File.createTempFile("yt_dl_", ".$ext")
+                val ext = resolved.format.extension
+                val targetName = storageManager.sanitizeFileName("${track.artist} - ${track.title}.$ext")
+                val tempFile = File.createTempFile("yt_dl_", ".$ext")
 
-            runCatching {
-                val request = Request.Builder()
-                    .url(resolved.streamUrl)
-                    .header("User-Agent", YouTubeSessionCookieManager.DEFAULT_USER_AGENT)
-                    .build()
-                proxyManager.getHttpClient().newCall(request).execute().use { resp ->
+                runCatching {
+                    val request = Request.Builder()
+                        .url(resolved.streamUrl)
+                        .header("User-Agent", YouTubeSessionCookieManager.DEFAULT_USER_AGENT)
+                        .build()
+                    proxyManager.getHttpClient().newCall(request).execute().use { resp ->
                     if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                     val body = resp.body ?: throw IllegalStateException("Empty body")
                     val total = body.contentLength().takeIf { it > 0 } ?: 1L
@@ -103,11 +118,13 @@ class YouTubeDownloadManager(
                     if (savedPath != null) {
                         val probed = AudioFormatDetector.probeAudioSpecs(tempFile, resolved.format)
                         trackDao.updateDownloadState(track.id, DownloadStatus.COMPLETED.name, 1f, savedPath)
-                        trackDao.updateTrackMetadata(
+                        trackDao.updateTrackAudioSpecs(
                             trackId = track.id,
-                            artworkUri = null,
+                            format = resolved.format.name,
+                            fileName = targetName,
+                            artworkUri = resolved.artworkUrl,
                             bitrateKbps = probed.bitrateKbps.takeIf { it > 0 } ?: resolved.bitrateKbps,
-                            sampleRateHz = probed.sampleRateHz,
+                            sampleRateHz = probed.sampleRateHz.takeIf { it > 0 } ?: resolved.sampleRateHz,
                             bitDepth = probed.bitDepth,
                             durationMs = probed.durationMs.takeIf { it > 0 } ?: resolved.durationMs
                         )
@@ -131,12 +148,13 @@ class YouTubeDownloadManager(
                         markFailed(taskId, track, "Không thể ghi vào /sdcard/Music/Musicplayer/")
                     }
                 }
-            }.onFailure { err ->
-                if (err !is kotlinx.coroutines.CancellationException) {
-                    markFailed(taskId, track, err.message ?: "Lỗi tải về")
+                }.onFailure { err ->
+                    if (err !is kotlinx.coroutines.CancellationException) {
+                        markFailed(taskId, track, err.message ?: "Lỗi tải về")
+                    }
                 }
+                tempFile.delete()
             }
-            tempFile.delete()
         }
         activeJobs[taskId] = job
     }

@@ -50,7 +50,7 @@ class CacheManager(
                 dao.deleteCacheEntry(key)
             }
         }
-        val candidate = listOf("m4a", "opus", "webm", "mp3")
+        val candidate = listOf("opus", "webm", "m4a", "mp3")
             .map { getYouTubeCacheFile(videoId, it) }
             .firstOrNull { it.exists() && it.length() > 16_384L }
         if (candidate != null) {

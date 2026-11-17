@@ -74,6 +74,28 @@ interface TrackDao {
         durationMs: Long
     )
 
+    @Query("""
+        UPDATE tracks SET
+            format = :format,
+            fileName = CASE WHEN :fileName != '' THEN :fileName ELSE fileName END,
+            artworkUri = COALESCE(:artworkUri, artworkUri),
+            bitrateKbps = CASE WHEN :bitrateKbps > 0 THEN :bitrateKbps ELSE bitrateKbps END,
+            sampleRateHz = CASE WHEN :sampleRateHz > 0 THEN :sampleRateHz ELSE sampleRateHz END,
+            bitDepth = COALESCE(:bitDepth, bitDepth),
+            durationMs = CASE WHEN :durationMs > 0 THEN :durationMs ELSE durationMs END
+        WHERE id = :trackId
+    """)
+    suspend fun updateTrackAudioSpecs(
+        trackId: String,
+        format: String,
+        fileName: String,
+        artworkUri: String?,
+        bitrateKbps: Int,
+        sampleRateHz: Int,
+        bitDepth: Int?,
+        durationMs: Long
+    )
+
     @Query("SELECT * FROM tracks WHERE lastPlayedEpochMs = 0 OR lastPlayedEpochMs < :cutoffEpochMs ORDER BY dateAddedEpochMs DESC")
     fun observeNotPlayedIn30Days(cutoffEpochMs: Long): Flow<List<TrackEntity>>
 

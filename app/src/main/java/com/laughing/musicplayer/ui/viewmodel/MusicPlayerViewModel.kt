@@ -34,6 +34,7 @@ import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.laughing.musicplayer.data.local.UserPreferences
 import com.laughing.musicplayer.data.telegram.TelegramAuthUiState
 import com.laughing.musicplayer.data.youtube.YouTubeCollectionResult
+import com.laughing.musicplayer.data.youtube.YouTubeExploreMood
 import com.laughing.musicplayer.data.youtube.YouTubeSearchTab
 import com.laughing.musicplayer.lyrics.LyricsResult
 import com.laughing.musicplayer.ui.theme.LiquidGlassPalette
@@ -78,6 +79,28 @@ data class UnifiedSearchUiState(
     val youtubeCollections: List<YouTubeCollectionResult> = emptyList(),
     val isSearchingYouTube: Boolean = false,
     val youtubeError: String? = null
+)
+
+data class YouTubeExploreUiState(
+    val isLoading: Boolean = false,
+    val hasLoaded: Boolean = false,
+    val trendingTracks: List<Track> = emptyList(),
+    val chartTracks: List<Track> = emptyList(),
+    val featuredPlaylists: List<YouTubeCollectionResult> = emptyList(),
+    val newReleases: List<YouTubeCollectionResult> = emptyList(),
+    val errorMessage: String? = null,
+    val selectedMood: YouTubeExploreMood? = null,
+    val isLoadingMood: Boolean = false,
+    val moodTracks: List<Track> = emptyList(),
+    val moodPlaylists: List<YouTubeCollectionResult> = emptyList(),
+    val moodError: String? = null
+)
+
+data class YouTubePlaylistDetailUiState(
+    val collection: YouTubeCollectionResult? = null,
+    val isLoading: Boolean = false,
+    val tracks: List<Track> = emptyList(),
+    val errorMessage: String? = null
 )
 
 data class LyricsUiState(
@@ -232,6 +255,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         _youtubeAsyncResults
     ) { query, tab, ytSubTab, tracks, ytRes ->
         val trimmed = query.trim()
+        val liveById = tracks.associateBy { it.id }
         val offline = tracks.filter { t ->
             t.source == MusicSource.OFFLINE &&
                 (trimmed.isEmpty() || matchesSearchQuery(t, trimmed))
@@ -246,7 +270,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             youtubeSubTab = ytSubTab,
             offlineResults = offline,
             telegramResults = telegram,
-            youtubeTracks = ytRes.tracks,
+            youtubeTracks = ytRes.tracks.map { liveById[it.id] ?: it },
             youtubeCollections = ytRes.collections,
             isSearchingYouTube = ytRes.isSearching,
             youtubeError = ytRes.errorMessage
@@ -254,6 +278,28 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UnifiedSearchUiState())
+
+    private val _exploreRawState = MutableStateFlow(YouTubeExploreUiState())
+    val exploreState: StateFlow<YouTubeExploreUiState> = combine(
+        _exploreRawState,
+        allTracks
+    ) { raw, tracks ->
+        val liveById = tracks.associateBy { it.id }
+        raw.copy(
+            trendingTracks = raw.trendingTracks.map { liveById[it.id] ?: it },
+            chartTracks = raw.chartTracks.map { liveById[it.id] ?: it },
+            moodTracks = raw.moodTracks.map { liveById[it.id] ?: it }
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), YouTubeExploreUiState())
+
+    private val _playlistRawState = MutableStateFlow(YouTubePlaylistDetailUiState())
+    val playlistDetailState: StateFlow<YouTubePlaylistDetailUiState> = combine(
+        _playlistRawState,
+        allTracks
+    ) { raw, tracks ->
+        val liveById = tracks.associateBy { it.id }
+        raw.copy(tracks = raw.tracks.map { liveById[it.id] ?: it })
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), YouTubePlaylistDetailUiState())
 
     private val _lyricsState = MutableStateFlow(LyricsUiState())
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
@@ -684,6 +730,116 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     )
                     _statusToast.value = message
                 }
+        }
+    }
+
+    fun loadYouTubeExploreIfNeeded(forceRefresh: Boolean = false) {
+        val current = _exploreRawState.value
+        if (current.isLoading) return
+        if (!forceRefresh && current.hasLoaded &&
+            (current.trendingTracks.isNotEmpty() || current.chartTracks.isNotEmpty() || current.featuredPlaylists.isNotEmpty())
+        ) {
+            return
+        }
+        viewModelScope.launch {
+            _exploreRawState.value = _exploreRawState.value.copy(
+                isLoading = true,
+                errorMessage = null
+            )
+            container.youTubeMusicRepository.fetchExploreFeed()
+                .onSuccess { data ->
+                    _exploreRawState.value = _exploreRawState.value.copy(
+                        isLoading = false,
+                        hasLoaded = true,
+                        trendingTracks = data.trendingTracks,
+                        chartTracks = data.chartTracks,
+                        featuredPlaylists = data.featuredPlaylists,
+                        newReleases = data.newReleases,
+                        errorMessage = null
+                    )
+                }
+                .onFailure { err ->
+                    _exploreRawState.value = _exploreRawState.value.copy(
+                        isLoading = false,
+                        hasLoaded = true,
+                        errorMessage = err.message ?: "Không thể tải Khám phá YouTube Music"
+                    )
+                }
+        }
+    }
+
+    fun selectExploreMood(mood: YouTubeExploreMood?) {
+        if (mood == null || _exploreRawState.value.selectedMood == mood) {
+            _exploreRawState.value = _exploreRawState.value.copy(
+                selectedMood = null,
+                isLoadingMood = false,
+                moodTracks = emptyList(),
+                moodPlaylists = emptyList(),
+                moodError = null
+            )
+            return
+        }
+        viewModelScope.launch {
+            _exploreRawState.value = _exploreRawState.value.copy(
+                selectedMood = mood,
+                isLoadingMood = true,
+                moodTracks = emptyList(),
+                moodPlaylists = emptyList(),
+                moodError = null
+            )
+            container.youTubeMusicRepository.fetchMoodExplore(mood)
+                .onSuccess { res ->
+                    if (_exploreRawState.value.selectedMood == mood) {
+                        _exploreRawState.value = _exploreRawState.value.copy(
+                            isLoadingMood = false,
+                            moodTracks = res.tracks,
+                            moodPlaylists = res.playlists,
+                            moodError = null
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    if (_exploreRawState.value.selectedMood == mood) {
+                        _exploreRawState.value = _exploreRawState.value.copy(
+                            isLoadingMood = false,
+                            moodError = err.message ?: "Không thể tải danh sách ${mood.labelVi}"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun openYouTubePlaylist(collection: YouTubeCollectionResult) {
+        viewModelScope.launch {
+            _playlistRawState.value = YouTubePlaylistDetailUiState(
+                collection = collection,
+                isLoading = true,
+                tracks = emptyList(),
+                errorMessage = null
+            )
+            container.youTubeMusicRepository.fetchPlaylistTracks(collection)
+                .onSuccess { tracks ->
+                    _playlistRawState.value = _playlistRawState.value.copy(
+                        isLoading = false,
+                        tracks = tracks,
+                        errorMessage = null
+                    )
+                }
+                .onFailure { err ->
+                    _playlistRawState.value = _playlistRawState.value.copy(
+                        isLoading = false,
+                        errorMessage = err.message ?: "Không thể tải danh sách phát"
+                    )
+                }
+        }
+    }
+
+    fun downloadPlaylistTracks(tracks: List<Track>) {
+        val count = container.youTubeDownloadManager.downloadPlaylist(tracks)
+        _statusToast.value = if (count > 0) {
+            "Đang tải $count bài hát OPUS vào /sdcard/Music/Musicplayer/"
+        } else {
+            "Tất cả bài hát trong playlist đã được tải về"
         }
     }
 

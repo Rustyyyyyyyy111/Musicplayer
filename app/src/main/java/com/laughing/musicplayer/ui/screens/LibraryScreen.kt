@@ -3,8 +3,14 @@ package com.laughing.musicplayer.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +29,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -30,6 +37,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FolderOpen
@@ -38,6 +46,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.AlertDialog
@@ -66,6 +75,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -75,6 +86,7 @@ import com.laughing.musicplayer.core.model.LibraryCategory
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.SmartPlaylistType
 import com.laughing.musicplayer.core.model.Track
+import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.laughing.musicplayer.ui.components.AppleCard
 import com.laughing.musicplayer.ui.components.AppleMusicSegmentedSwitcher
 import com.laughing.musicplayer.ui.components.ArtworkImage
@@ -135,6 +147,15 @@ fun LibraryScreen(
     var editingGenreTrack by remember { mutableStateOf<Track?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
 
+    // Collapsible Local Search with isolated TextFieldValue to preserve Vietnamese Telex/VNI IME cursor
+    var isLocalSearchVisible by rememberSaveable { mutableStateOf(false) }
+    var localSearchValue by remember { mutableStateOf(TextFieldValue("")) }
+
+    BackHandler(enabled = isLocalSearchVisible) {
+        localSearchValue = TextFieldValue("")
+        isLocalSearchVisible = false
+    }
+
     val storagePermissions = remember {
         when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(Manifest.permission.READ_MEDIA_AUDIO)
@@ -192,6 +213,19 @@ fun LibraryScreen(
         allTracks.filter { it.source == selectedSource }
     }
 
+    val localSearchQuery = localSearchValue.text.trim()
+    val isFilteringLocally = isLocalSearchVisible && localSearchQuery.isNotEmpty()
+    val localFilteredTracks = remember(allTracks, localSearchQuery, isFilteringLocally) {
+        if (!isFilteringLocally) {
+            emptyList()
+        } else {
+            allTracks.filter { track ->
+                val blob = "${track.title} ${track.artist} ${track.album} ${track.telegramTopicName.orEmpty()} ${track.fileName}"
+                VietnameseTextNormalizer.matches(blob, localSearchQuery)
+            }
+        }
+    }
+
     val artists = remember(sourceTracks, topics, selectedSource) {
         val relevantTopics = if (selectedSource == MusicSource.TELEGRAM) topics else emptyList()
         viewModel.buildArtistGroups(sourceTracks, relevantTopics)
@@ -218,7 +252,29 @@ fun LibraryScreen(
                     style = MaterialTheme.typography.displayLarge,
                     color = colors.textPrimary
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = {
+                            if (isLocalSearchVisible) {
+                                localSearchValue = TextFieldValue("")
+                                isLocalSearchVisible = false
+                            } else {
+                                isLocalSearchVisible = true
+                            }
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("library_search_btn")
+                    ) {
+                        Icon(
+                            imageVector = if (isLocalSearchVisible) Icons.Filled.Clear else Icons.Filled.Search,
+                            contentDescription = if (isLocalSearchVisible) "Đóng tìm kiếm thư viện" else "Tìm trong thư viện",
+                            tint = if (isLocalSearchVisible) colors.accent else colors.textPrimary
+                        )
+                    }
                     when (selectedSource) {
                         MusicSource.TELEGRAM -> Unit
                         MusicSource.YOUTUBE_MUSIC -> {
@@ -246,41 +302,87 @@ fun LibraryScreen(
                 }
             }
 
-            // Segmented Source Switcher: [ Telegram | YouTube Music | Offline ]
-            AppleMusicSegmentedSwitcher(
-                selectedSource = selectedSource,
-                onSelect = {
-                    selectedArtistGroup = null
-                    selectedGenre = null
-                    selectedAlbumName = null
-                    viewModel.selectLibrarySource(it)
-                }
-            )
-
-            // Category Pills
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.testTag("library_category_row")
+            AnimatedVisibility(
+                visible = isLocalSearchVisible,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
             ) {
-                items(LibraryTabOption.entries) { cat ->
-                    val selected = cat == activeCategory
-                    FilterChip(
-                        selected = selected,
-                        onClick = { setActiveCategory(cat) },
-                        label = { Text(cat.labelVi) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = colors.accent,
-                            selectedLabelColor = Color.White,
-                            labelColor = colors.textPrimary
-                        ),
-                        modifier = Modifier.testTag("lib_cat_${cat.name.lowercase()}")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedTextField(
+                        value = localSearchValue,
+                        onValueChange = { localSearchValue = it },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("library_search_input"),
+                        placeholder = { Text("Tìm trong thư viện...") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (localSearchValue.text.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { localSearchValue = TextFieldValue("") },
+                                    modifier = Modifier.testTag("library_search_clear")
+                                ) {
+                                    Icon(Icons.Filled.Clear, contentDescription = "Xóa từ khóa")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search)
                     )
+                    TextButton(
+                        onClick = {
+                            localSearchValue = TextFieldValue("")
+                            isLocalSearchVisible = false
+                        },
+                        modifier = Modifier.testTag("library_search_cancel")
+                    ) {
+                        Text("Hủy", color = colors.accent)
+                    }
+                }
+            }
+
+            if (!isFilteringLocally) {
+                // Segmented Source Switcher: [ Telegram | YouTube Music | Offline ]
+                AppleMusicSegmentedSwitcher(
+                    selectedSource = selectedSource,
+                    onSelect = {
+                        selectedArtistGroup = null
+                        selectedGenre = null
+                        selectedAlbumName = null
+                        viewModel.selectLibrarySource(it)
+                    }
+                )
+
+                // Category Pills
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.testTag("library_category_row")
+                ) {
+                    items(LibraryTabOption.entries) { cat ->
+                        val selected = cat == activeCategory
+                        FilterChip(
+                            selected = selected,
+                            onClick = { setActiveCategory(cat) },
+                            label = { Text(cat.labelVi) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = colors.accent,
+                                selectedLabelColor = Color.White,
+                                labelColor = colors.textPrimary
+                            ),
+                            modifier = Modifier.testTag("lib_cat_${cat.name.lowercase()}")
+                        )
+                    }
                 }
             }
         }
 
         // Drill-down header if viewing an Artist / Forum Topic / Album / Genre / Smart Playlist
-        if (selectedArtistGroup != null || selectedAlbumName != null || selectedGenre != null || selectedSmartPlaylist != null) {
+        if (!isFilteringLocally && (selectedArtistGroup != null || selectedAlbumName != null || selectedGenre != null || selectedSmartPlaylist != null)) {
             val headerTitle = selectedArtistGroup?.name
                 ?: selectedAlbumName
                 ?: selectedGenre?.displayNameVi
@@ -313,10 +415,79 @@ fun LibraryScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("library_content_list"),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 160.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            contentPadding = PaddingValues(top = 4.dp, bottom = 160.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-            if (selectedArtistGroup != null) {
+            if (isFilteringLocally) {
+                item(key = "local_search_summary") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Kết quả trong thư viện (${localFilteredTracks.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "Telegram • YouTube • Offline",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colors.textSecondary
+                        )
+                    }
+                }
+                if (localFilteredTracks.isEmpty()) {
+                    item(key = "local_search_empty") {
+                        AppleCard(
+                            cornerRadius = 20.dp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = "Không tìm thấy bài hát phù hợp trong thư viện",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = colors.textPrimary
+                                )
+                                Text(
+                                    text = "Không có bài hát nào khớp với \"$localSearchQuery\" ở các nguồn đã lưu.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.textSecondary
+                                )
+                                Button(
+                                    onClick = onOpenSearch,
+                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
+                                    shape = RoundedCornerShape(14.dp)
+                                ) {
+                                    Text("Tìm trên YouTube Music")
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(localFilteredTracks, key = { "loc_${it.id}" }) { track ->
+                        TrackRowItem(
+                            track = track,
+                            isCurrent = playback.currentTrack?.id == track.id,
+                            onPlay = { viewModel.playTrack(track, localFilteredTracks) },
+                            onToggleFavorite = { viewModel.toggleFavorite(track) },
+                            onDownload = { viewModel.downloadTrack(track) },
+                            onAddToQueue = { viewModel.addToQueueNext(track) },
+                            onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
+                            onEditGenre = { editingGenreTrack = track }
+                        )
+                    }
+                }
+            } else if (selectedArtistGroup != null) {
                 val target = selectedArtistGroup!!
                 val filtered = if (target.isTelegramTopic && target.chatId != null && target.threadId != null) {
                     sourceTracks.filter { it.telegramChatId == target.chatId && it.telegramThreadId == target.threadId }
@@ -371,7 +542,10 @@ fun LibraryScreen(
                 }
                 if (smartTracks.isEmpty()) {
                     item {
-                        AppleCard(cornerRadius = 20.dp) {
+                        AppleCard(
+                            cornerRadius = 20.dp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
+                        ) {
                             Text(
                                 text = "Chưa có bài hát nào khớp điều kiện của danh sách phát thông minh này.",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -429,7 +603,8 @@ fun LibraryScreen(
                         items(artists, key = { it.key }) { artist ->
                             AppleCard(
                                 cornerRadius = 18.dp,
-                                onClick = { selectedArtistGroup = artist }
+                                onClick = { selectedArtistGroup = artist },
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -475,7 +650,8 @@ fun LibraryScreen(
                         items(albums, key = { it.name }) { album ->
                             AppleCard(
                                 cornerRadius = 18.dp,
-                                onClick = { selectedAlbumName = album.name }
+                                onClick = { selectedAlbumName = album.name },
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -503,7 +679,8 @@ fun LibraryScreen(
                             val count = allTracks.count { it.genre == genre }
                             AppleCard(
                                 cornerRadius = 18.dp,
-                                onClick = { selectedGenre = genre }
+                                onClick = { selectedGenre = genre },
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -527,7 +704,7 @@ fun LibraryScreen(
                     LibraryTabOption.PLAYLISTS -> {
                         item {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Button(
@@ -553,7 +730,7 @@ fun LibraryScreen(
                         }
                         item {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 OutlinedButton(
@@ -586,7 +763,7 @@ fun LibraryScreen(
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = colors.textPrimary,
-                                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 4.dp)
                             )
                         }
                         items(SmartPlaylistType.entries, key = { it.id }) { smartType ->
@@ -603,7 +780,9 @@ fun LibraryScreen(
                             AppleCard(
                                 cornerRadius = 20.dp,
                                 onClick = { selectedSmartPlaylist = smartType },
-                                modifier = Modifier.testTag("smart_playlist_${smartType.name.lowercase()}")
+                                modifier = Modifier
+                                    .padding(horizontal = 16.dp, vertical = 5.dp)
+                                    .testTag("smart_playlist_${smartType.name.lowercase()}")
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -654,12 +833,15 @@ fun LibraryScreen(
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = colors.textPrimary,
-                                    modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 4.dp)
                                 )
                             }
                         }
                         items(playlists, key = { it.id }) { pl ->
-                            AppleCard(cornerRadius = 18.dp) {
+                            AppleCard(
+                                cornerRadius = 18.dp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
+                            ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(14.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -720,7 +902,10 @@ fun LibraryScreen(
                     LibraryTabOption.DUPLICATES -> {
                         if (duplicates.isEmpty()) {
                             item {
-                                AppleCard(cornerRadius = 20.dp) {
+                                AppleCard(
+                                    cornerRadius = 20.dp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
+                                ) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth().padding(20.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -737,7 +922,10 @@ fun LibraryScreen(
                             }
                         } else {
                             items(duplicates, key = { it.groupId }) { group ->
-                                AppleCard(cornerRadius = 20.dp) {
+                                AppleCard(
+                                    cornerRadius = 20.dp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
+                                ) {
                                     Column(
                                         modifier = Modifier.padding(14.dp),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -841,7 +1029,10 @@ private fun EmptySourceCard(
     onScanOffline: () -> Unit
 ) {
     val colors = LocalMusicPlayerColors.current
-    AppleCard(cornerRadius = 22.dp) {
+    AppleCard(
+        cornerRadius = 22.dp,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

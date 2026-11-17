@@ -467,7 +467,10 @@ fun NowPlayingSheet(
                             tint = if (showLyricsView) colors.accent else Color.White.copy(alpha = 0.80f)
                         )
                     }
-                    IconButton(onClick = onOpenEqualizer, modifier = Modifier.size(48.dp)) {
+                    IconButton(
+                        onClick = onOpenEqualizer,
+                        modifier = Modifier.size(48.dp).testTag("now_playing_eq_btn")
+                    ) {
                         Icon(Icons.Filled.GraphicEq, contentDescription = "Equalizer", tint = Color.White.copy(alpha = 0.80f))
                     }
                     IconButton(onClick = { viewModel.toggleRomanization() }, modifier = Modifier.size(48.dp)) {

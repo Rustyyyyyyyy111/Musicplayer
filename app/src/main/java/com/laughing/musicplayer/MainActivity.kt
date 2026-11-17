@@ -68,6 +68,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.laughing.musicplayer.core.model.TelegramChatType
 import com.laughing.musicplayer.core.model.UnifiedSearchTab
+import com.laughing.musicplayer.data.youtube.YouTubeCollectionResult
+import com.laughing.musicplayer.data.youtube.YouTubeSearchTab
 import com.laughing.musicplayer.ui.components.AppleMusicSurfaceBackground
 import com.laughing.musicplayer.ui.components.FloatingMiniPlayer
 import com.laughing.musicplayer.ui.screens.ActivityLogsScreen
@@ -83,6 +85,7 @@ import com.laughing.musicplayer.ui.screens.TelegramAuthScreen
 import com.laughing.musicplayer.ui.screens.TelegramSourcePickerScreen
 import com.laughing.musicplayer.ui.screens.TopicTracksScreen
 import com.laughing.musicplayer.ui.screens.YouTubeAuthScreen
+import com.laughing.musicplayer.ui.screens.YouTubePlaylistDetailScreen
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.theme.MusicPlayerTheme
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
@@ -96,6 +99,14 @@ import kotlinx.serialization.Serializable
 @Serializable object YouTubeAuthRoute
 @Serializable data class TelegramSourcePickerRoute(val filterTypeName: String? = null)
 @Serializable data class TopicTracksRoute(val chatId: Long, val threadId: Long, val topicTitle: String)
+@Serializable data class YouTubePlaylistDetailRoute(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val artworkUrl: String?,
+    val url: String,
+    val kindName: String
+)
 @Serializable object EqualizerRoute
 @Serializable object DownloadsRoute
 @Serializable object CarModeRoute
@@ -310,11 +321,7 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                 startDestination = ListenNowRoute
                             ) {
                                 composable<ListenNowRoute> {
-                                    ListenNowScreen(
-                                        viewModel = viewModel,
-                                        onOpenCarMode = { navController.navigate(CarModeRoute) },
-                                        onOpenEqualizer = { navController.navigate(EqualizerRoute) }
-                                    )
+                                    ListenNowScreen(viewModel = viewModel)
                                 }
 
                                 composable<LibraryRoute> {
@@ -325,7 +332,22 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                 }
 
                                 composable<SearchRoute> {
-                                    SearchScreen(viewModel = viewModel)
+                                    SearchScreen(
+                                        viewModel = viewModel,
+                                        onOpenPlaylist = { collection ->
+                                            viewModel.openYouTubePlaylist(collection)
+                                            navController.navigate(
+                                                YouTubePlaylistDetailRoute(
+                                                    id = collection.id,
+                                                    title = collection.title,
+                                                    subtitle = collection.subtitle,
+                                                    artworkUrl = collection.artworkUrl,
+                                                    url = collection.url,
+                                                    kindName = collection.kind.name
+                                                )
+                                            )
+                                        }
+                                    )
                                 }
 
                                 composable<SettingsRoute> {
@@ -391,6 +413,24 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                         chatId = args.chatId,
                                         threadId = args.threadId,
                                         topicTitle = args.topicTitle,
+                                        onBack = { navController.popBackStack() }
+                                    )
+                                }
+
+                                composable<YouTubePlaylistDetailRoute> { entry ->
+                                    val args = entry.toRoute<YouTubePlaylistDetailRoute>()
+                                    val collection = YouTubeCollectionResult(
+                                        id = args.id,
+                                        title = args.title,
+                                        subtitle = args.subtitle,
+                                        artworkUrl = args.artworkUrl,
+                                        url = args.url,
+                                        kind = runCatching { YouTubeSearchTab.valueOf(args.kindName) }
+                                            .getOrDefault(YouTubeSearchTab.PLAYLISTS)
+                                    )
+                                    YouTubePlaylistDetailScreen(
+                                        viewModel = viewModel,
+                                        collection = collection,
                                         onBack = { navController.popBackStack() }
                                     )
                                 }

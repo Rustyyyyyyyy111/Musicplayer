@@ -406,7 +406,7 @@ fun SettingsScreen(
                     SettingsDivider()
                     SettingsNavRow(
                         icon = Icons.Filled.DirectionsCar,
-                        title = "Chế độ xe",
+                        title = "Chế độ lái xe",
                         subtitle = "Giao diện tương phản cao, nút điều khiển lớn",
                         onClick = onOpenCarMode,
                         testTag = "setting_car_mode"

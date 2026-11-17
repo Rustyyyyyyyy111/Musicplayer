@@ -290,4 +290,53 @@ class MusicPlayerEngineTests {
             )
         )
     }
+
+    @Test
+    fun youtubeOpusStreamSelectorStrictlyPrioritizesOpusOverM4a() {
+        assertTrue(
+            com.laughing.musicplayer.data.youtube.YouTubeMusicRepository.isOpusStreamCandidate(
+                codec = "opus",
+                mimeType = "audio/webm",
+                formatName = "WEBMA_OPUS"
+            )
+        )
+        assertFalse(
+            com.laughing.musicplayer.data.youtube.YouTubeMusicRepository.isOpusStreamCandidate(
+                codec = "mp4a.40.2",
+                mimeType = "audio/mp4",
+                formatName = "M4A"
+            )
+        )
+
+        val m4aHigh = org.schabi.newpipe.extractor.stream.AudioStream.Builder()
+            .setId("140")
+            .setContent("https://example.com/140.m4a", true)
+            .setMediaFormat(org.schabi.newpipe.extractor.MediaFormat.M4A)
+            .setAverageBitrate(192)
+            .build()
+        val opus128 = org.schabi.newpipe.extractor.stream.AudioStream.Builder()
+            .setId("250")
+            .setContent("https://example.com/250.webm", true)
+            .setMediaFormat(org.schabi.newpipe.extractor.MediaFormat.WEBMA_OPUS)
+            .setAverageBitrate(128)
+            .build()
+        val opus160 = org.schabi.newpipe.extractor.stream.AudioStream.Builder()
+            .setId("251")
+            .setContent("https://example.com/251.webm", true)
+            .setMediaFormat(org.schabi.newpipe.extractor.MediaFormat.WEBMA_OPUS)
+            .setAverageBitrate(160)
+            .build()
+
+        val selected = com.laughing.musicplayer.data.youtube.YouTubeMusicRepository.selectBestOpusFirstStream(
+            listOf(m4aHigh, opus128, opus160)
+        )
+        assertEquals("251", selected?.id)
+        assertEquals(org.schabi.newpipe.extractor.MediaFormat.WEBMA_OPUS, selected?.format)
+
+        // Falls back cleanly to M4A only if no Opus stream is available
+        val fallback = com.laughing.musicplayer.data.youtube.YouTubeMusicRepository.selectBestOpusFirstStream(
+            listOf(m4aHigh)
+        )
+        assertEquals("140", fallback?.id)
+    }
 }

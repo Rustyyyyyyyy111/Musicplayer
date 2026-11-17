@@ -60,6 +60,8 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("listen_now_screen").assertIsDisplayed()
         composeRule.onNodeWithText("AI Smart Mix").assertDoesNotExist()
         composeRule.onNodeWithTag("tg_setup_btn").assertDoesNotExist()
+        composeRule.onNodeWithTag("quick_eq_btn").assertDoesNotExist()
+        composeRule.onNodeWithTag("quick_car_mode_btn").assertDoesNotExist()
 
         // Primary Vietnamese bottom navigation tabs are visible
         composeRule.onNodeWithTag("nav_listen_now").assertIsDisplayed()
@@ -119,11 +121,14 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithText("Đăng nhập YouTube").assertIsDisplayed()
         composeRule.onNodeWithText("Chưa đăng nhập").assertIsDisplayed()
 
-        // Crossfade slider in Settings
+        // Crossfade slider & Car Mode in Settings
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasText("Nhạc và phát lại"))
         composeRule.onNodeWithText("Nhạc và phát lại").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_crossfade_slider"))
         composeRule.onNodeWithTag("setting_crossfade_slider").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_car_mode"))
+        composeRule.onNodeWithTag("setting_car_mode").assertIsDisplayed()
+        composeRule.onNodeWithText("Chế độ lái xe").assertIsDisplayed()
 
         // Storage path & Manage Downloads
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasText("Bộ nhớ"))
@@ -404,5 +409,165 @@ class ExampleRobolectricTest {
             assertFalse(settings.preferencesFlow.first().isYouTubeLoggedIn)
             db.close()
         }
+    }
+
+    @Test
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun media3CompactNotificationButtonsAndCommandsAlwaysExposeNextAndPrevious() {
+        val augmented = com.laughing.musicplayer.audio.MusicLibraryService.augmentAvailableCommands(
+            androidx.media3.common.Player.Commands.EMPTY
+        )
+        assertTrue(augmented.contains(androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS))
+        assertTrue(augmented.contains(androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM))
+        assertTrue(augmented.contains(androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT))
+        assertTrue(augmented.contains(androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM))
+
+        val buttons = com.laughing.musicplayer.audio.MusicLibraryService.buildCompactTransportButtons(
+            showPauseButton = true
+        )
+        assertEquals(3, buttons.size)
+        assertEquals(androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS, buttons[0].playerCommand)
+        assertEquals(androidx.media3.common.Player.COMMAND_PLAY_PAUSE, buttons[1].playerCommand)
+        assertEquals(androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT, buttons[2].playerCommand)
+        assertEquals(
+            0,
+            buttons[0].extras.getInt(
+                androidx.media3.session.DefaultMediaNotificationProvider.COMMAND_KEY_COMPACT_VIEW_INDEX,
+                -1
+            )
+        )
+        assertEquals(
+            1,
+            buttons[1].extras.getInt(
+                androidx.media3.session.DefaultMediaNotificationProvider.COMMAND_KEY_COMPACT_VIEW_INDEX,
+                -1
+            )
+        )
+        assertEquals(
+            2,
+            buttons[2].extras.getInt(
+                androidx.media3.session.DefaultMediaNotificationProvider.COMMAND_KEY_COMPACT_VIEW_INDEX,
+                -1
+            )
+        )
+    }
+
+    @Test
+    fun libraryLocalSearchFiltersAcrossAllSourcesAndExploreShowsMoodsOnEmptySearch() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val db = (context.applicationContext as MusicPlayerApplication).container.database
+            val now = System.currentTimeMillis()
+            db.trackDao().upsertTracks(
+                listOf(
+                    TrackEntity(
+                        id = "lib_tg_1",
+                        title = "Đúng Lúc Gặp Người",
+                        artist = "Vũ",
+                        album = "Telegram Album",
+                        source = "TELEGRAM",
+                        durationMs = 210_000L,
+                        format = "FLAC",
+                        bitrateKbps = 1411,
+                        sampleRateHz = 48000,
+                        bitDepth = 24,
+                        fileSizeBytes = 32_000_000L,
+                        fileHash = null,
+                        fileName = "dung_luc.flac",
+                        artworkUri = null,
+                        streamUri = null,
+                        localPath = null,
+                        telegramChatId = 1L,
+                        telegramChatTitle = "Nhạc Việt",
+                        telegramMessageId = 10L,
+                        telegramFileId = 100,
+                        telegramThreadId = null,
+                        telegramTopicName = null,
+                        youtubeVideoId = null,
+                        genre = "BALLAD",
+                        genreManuallyEdited = false,
+                        isVoiceMessage = false,
+                        downloadStatus = "NONE",
+                        downloadProgress = 0f,
+                        isFavorite = false,
+                        dateAddedEpochMs = now,
+                        lastPlayedEpochMs = 0L,
+                        playCount = 0,
+                        loudnessGainDb = 0f,
+                        bpm = 92,
+                        normalizedSearchBlob = "dung luc gap nguoi vu"
+                    ),
+                    TrackEntity(
+                        id = "lib_yt_1",
+                        title = "Nơi Này Có Anh",
+                        artist = "Sơn Tùng M-TP",
+                        album = "YouTube Music",
+                        source = "YOUTUBE_MUSIC",
+                        durationMs = 240_000L,
+                        format = "OPUS",
+                        bitrateKbps = 160,
+                        sampleRateHz = 48000,
+                        bitDepth = null,
+                        fileSizeBytes = 5_000_000L,
+                        fileHash = null,
+                        fileName = "noi_nay_co_anh.opus",
+                        artworkUri = null,
+                        streamUri = "https://www.youtube.com/watch?v=test1",
+                        localPath = "/tmp/test1.opus",
+                        telegramChatId = null,
+                        telegramChatTitle = null,
+                        telegramMessageId = null,
+                        telegramFileId = null,
+                        telegramThreadId = null,
+                        telegramTopicName = null,
+                        youtubeVideoId = "test1",
+                        genre = "POP",
+                        genreManuallyEdited = false,
+                        isVoiceMessage = false,
+                        downloadStatus = "COMPLETED",
+                        downloadProgress = 1f,
+                        isFavorite = false,
+                        dateAddedEpochMs = now,
+                        lastPlayedEpochMs = 0L,
+                        playCount = 0,
+                        loudnessGainDb = 0f,
+                        bpm = 110,
+                        normalizedSearchBlob = "noi nay co anh son tung mtp"
+                    )
+                )
+            )
+        }
+
+        composeRule.waitForIdle()
+        // 1. Explore feed & Mood chips when Search tab is opened with empty input
+        composeRule.onNodeWithTag("nav_search").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("explore_feed_list").assertIsDisplayed()
+        composeRule.onNodeWithText("Tâm trạng & Thể loại").assertIsDisplayed()
+        composeRule.onNodeWithTag("explore_mood_vpop").assertIsDisplayed()
+        composeRule.onNodeWithTag("explore_mood_chill").assertIsDisplayed()
+
+        // 2. Library local search filters across Telegram + YouTube Music + Offline
+        composeRule.onNodeWithTag("nav_library").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("library_search_btn").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("library_search_input").assertIsDisplayed()
+        composeRule.onNodeWithTag("library_search_input").performTextInput("noi nay")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("track_row_lib_yt_1").assertIsDisplayed()
+        composeRule.onNodeWithTag("track_row_lib_tg_1").assertDoesNotExist()
+
+        // Clear and test Vietnamese query matching Telegram track
+        composeRule.onNodeWithTag("library_search_clear").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("library_search_input").performTextInput("đúng lúc")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("track_row_lib_tg_1").assertIsDisplayed()
+
+        // Cancel collapses local search bar
+        composeRule.onNodeWithTag("library_search_cancel").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("library_search_input").assertDoesNotExist()
     }
 }

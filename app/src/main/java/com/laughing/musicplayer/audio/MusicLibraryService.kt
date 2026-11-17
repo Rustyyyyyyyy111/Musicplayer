@@ -9,6 +9,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
@@ -20,6 +21,7 @@ import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.google.common.collect.ImmutableList
 import java.io.File
+import android.os.Bundle
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -56,6 +58,58 @@ class MusicLibraryService : MediaLibraryService() {
         private const val NODE_PLAYLISTS = "node_playlists"
         private const val NODE_FAVORITES = "node_favorites"
         private const val NODE_QUEUE = "node_queue"
+
+        internal val ALWAYS_ENABLED_TRANSPORT_COMMANDS = Player.Commands.Builder()
+            .addAll(
+                Player.COMMAND_SEEK_TO_PREVIOUS,
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                Player.COMMAND_SEEK_TO_NEXT,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM
+            )
+            .build()
+
+        internal fun augmentAvailableCommands(base: Player.Commands): Player.Commands {
+            return base.buildUpon()
+                .addAll(ALWAYS_ENABLED_TRANSPORT_COMMANDS)
+                .build()
+        }
+
+        internal fun buildCompactTransportButtons(showPauseButton: Boolean): ImmutableList<CommandButton> {
+            val prevExtras = Bundle().apply {
+                putInt(DefaultMediaNotificationProvider.COMMAND_KEY_COMPACT_VIEW_INDEX, 0)
+            }
+            val playPauseExtras = Bundle().apply {
+                putInt(DefaultMediaNotificationProvider.COMMAND_KEY_COMPACT_VIEW_INDEX, 1)
+            }
+            val nextExtras = Bundle().apply {
+                putInt(DefaultMediaNotificationProvider.COMMAND_KEY_COMPACT_VIEW_INDEX, 2)
+            }
+
+            val prevButton = CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+                .setPlayerCommand(Player.COMMAND_SEEK_TO_PREVIOUS)
+                .setDisplayName("Bài trước")
+                .setEnabled(true)
+                .setExtras(prevExtras)
+                .build()
+
+            val playPauseButton = CommandButton.Builder(
+                if (showPauseButton) CommandButton.ICON_PAUSE else CommandButton.ICON_PLAY
+            )
+                .setPlayerCommand(Player.COMMAND_PLAY_PAUSE)
+                .setDisplayName(if (showPauseButton) "Tạm dừng" else "Phát")
+                .setEnabled(true)
+                .setExtras(playPauseExtras)
+                .build()
+
+            val nextButton = CommandButton.Builder(CommandButton.ICON_NEXT)
+                .setPlayerCommand(Player.COMMAND_SEEK_TO_NEXT)
+                .setDisplayName("Bài tiếp theo")
+                .setEnabled(true)
+                .setExtras(nextExtras)
+                .build()
+
+            return ImmutableList.of(prevButton, playPauseButton, nextButton)
+        }
     }
 
     override fun onCreate() {
@@ -73,7 +127,7 @@ class MusicLibraryService : MediaLibraryService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val forwardingPlayer = LyricsForwardingPlayer(controller.activePlayer)
+        val forwardingPlayer = LyricsForwardingPlayer(controller.activePlayer, controller)
         mediaLibrarySession = MediaLibrarySession.Builder(
             this,
             forwardingPlayer,
@@ -83,7 +137,7 @@ class MusicLibraryService : MediaLibraryService() {
             .build()
 
         controller.onActivePlayerChanged = { newPlayer ->
-            mediaLibrarySession?.player = LyricsForwardingPlayer(newPlayer)
+            mediaLibrarySession?.player = LyricsForwardingPlayer(newPlayer, controller)
         }
 
         observeLockScreenLyricPreferences(app)
@@ -177,10 +231,19 @@ class MusicLibraryService : MediaLibraryService() {
 
     /**
      * Custom MediaNotification.Provider that projects the live synchronized `.lrc` line
-     * directly onto the Android MediaStyle Notification & Lock Screen media card.
+     * and enforces 3-button compact transport controls: [Previous, Play/Pause, Next].
      */
     private inner class LyricsMediaNotificationProvider(context: Context) :
         DefaultMediaNotificationProvider(context) {
+
+        override fun getMediaButtons(
+            session: MediaSession,
+            playerCommands: Player.Commands,
+            mediaButtonPreferences: ImmutableList<CommandButton>,
+            showPauseButton: Boolean
+        ): ImmutableList<CommandButton> {
+            return buildCompactTransportButtons(showPauseButton)
+        }
 
         override fun getNotificationContentTitle(metadata: MediaMetadata): CharSequence? {
             return super.getNotificationContentTitle(metadata)
@@ -198,9 +261,97 @@ class MusicLibraryService : MediaLibraryService() {
 
     /**
      * Non-destructive ForwardingPlayer that enriches MediaSession metadata with the active
-     * synced lyric subtitle without modifying ExoPlayer's active MediaItem.
+     * synced lyric subtitle, exposes Next/Previous commands even on single-track queues,
+     * and routes lock-screen Next/Previous taps into DualPlayerCrossfadeController.
      */
-    private inner class LyricsForwardingPlayer(player: Player) : ForwardingPlayer(player) {
+    internal inner class LyricsForwardingPlayer(
+        player: Player,
+        private val controller: DualPlayerCrossfadeController
+    ) : ForwardingPlayer(player) {
+
+        private val listenerWrappers = mutableMapOf<Player.Listener, Player.Listener>()
+
+        override fun getAvailableCommands(): Player.Commands {
+            return augmentAvailableCommands(super.getAvailableCommands())
+        }
+
+        override fun isCommandAvailable(command: Int): Boolean {
+            return when (command) {
+                Player.COMMAND_SEEK_TO_PREVIOUS,
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                Player.COMMAND_SEEK_TO_NEXT,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> true
+                else -> super.isCommandAvailable(command)
+            }
+        }
+
+        override fun hasNextMediaItem(): Boolean = true
+
+        override fun hasPreviousMediaItem(): Boolean = true
+
+        override fun seekToNext() {
+            controller.skipToNext()
+        }
+
+        override fun seekToNextMediaItem() {
+            controller.skipToNext()
+        }
+
+        override fun seekToPrevious() {
+            controller.skipToPrevious()
+        }
+
+        override fun seekToPreviousMediaItem() {
+            controller.skipToPrevious()
+        }
+
+        override fun addListener(listener: Player.Listener) {
+            val wrapper = object : Player.Listener {
+                override fun onAvailableCommandsChanged(availableCommands: Player.Commands) {
+                    listener.onAvailableCommandsChanged(augmentAvailableCommands(availableCommands))
+                }
+
+                override fun onEvents(player: Player, events: Player.Events) {
+                    listener.onEvents(this@LyricsForwardingPlayer, events)
+                }
+
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    listener.onIsPlayingChanged(isPlaying)
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    listener.onPlaybackStateChanged(playbackState)
+                }
+
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    listener.onPlayWhenReadyChanged(playWhenReady, reason)
+                }
+
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    listener.onMediaItemTransition(mediaItem, reason)
+                }
+
+                override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                    listener.onMediaMetadataChanged(this@LyricsForwardingPlayer.mediaMetadata)
+                }
+
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int
+                ) {
+                    listener.onPositionDiscontinuity(oldPosition, newPosition, reason)
+                }
+            }
+            listenerWrappers[listener] = wrapper
+            super.addListener(wrapper)
+        }
+
+        override fun removeListener(listener: Player.Listener) {
+            val wrapper = listenerWrappers.remove(listener)
+            super.removeListener(wrapper ?: listener)
+        }
+
         override fun getMediaMetadata(): MediaMetadata {
             val base = super.getMediaMetadata()
             val lyric = currentLyricLine
@@ -215,6 +366,18 @@ class MusicLibraryService : MediaLibraryService() {
     }
 
     private inner class LibraryCallback : MediaLibrarySession.Callback {
+
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult {
+            val playerCommands = augmentAvailableCommands(
+                MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS
+            )
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailablePlayerCommands(playerCommands)
+                .build()
+        }
 
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,

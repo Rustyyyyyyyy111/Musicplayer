@@ -831,8 +831,8 @@ fun TopicTracksScreen(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 150.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                contentPadding = PaddingValues(top = 4.dp, bottom = 150.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
                 items(tracks, key = { it.id }) { track ->
                     TrackRowItem(
