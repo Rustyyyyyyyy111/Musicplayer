@@ -21,17 +21,17 @@ import java.io.File
 import java.io.IOException
 
 interface TelegramFileClient {
-    suspend fun getFile(fileId: Int, timeoutMs: Long = 9_000L): Result<TdApi.File>
+    suspend fun getFile(fileId: Int, timeoutMs: Long = 5_500L): Result<TdApi.File>
     suspend fun getRemoteFile(
         remoteFileId: String,
         fileType: TdApi.FileType,
-        timeoutMs: Long = 9_000L
+        timeoutMs: Long = 6_000L
     ): Result<TdApi.File>
 
     suspend fun getMessage(
         chatId: Long,
         messageId: Long,
-        timeoutMs: Long = 9_000L
+        timeoutMs: Long = 6_500L
     ): Result<TdApi.Message>
 
     suspend fun downloadFile(
@@ -40,7 +40,7 @@ interface TelegramFileClient {
         offset: Long,
         limit: Long,
         synchronous: Boolean,
-        timeoutMs: Long = 9_000L
+        timeoutMs: Long = 6_500L
     ): Result<TdApi.File>
 }
 
@@ -98,6 +98,13 @@ data class ResolvedTelegramDownload(
     val refreshedArtworkUri: String? = null
 )
 
+data class ProgressiveTelegramResolution(
+    val track: Track,
+    val playUri: String,
+    val isLocalFile: Boolean,
+    val mimeType: String? = null
+)
+
 class TelegramFileResolver(
     private val client: TelegramFileClient,
     private val trackDao: TrackDao,
@@ -120,17 +127,403 @@ class TelegramFileResolver(
         waitForReady = { core.waitForReady() }
     )
 
+    suspend fun findExistingLocalAudioTrack(track: Track): Track? {
+        val dbEntity = trackDao.getTrackById(track.id)
+            ?: if (track.telegramChatId != null && track.telegramMessageId != null) {
+                trackDao.findByTelegramMessage(track.telegramChatId, track.telegramMessageId)
+            } else {
+                null
+            }
+        val dbTrack = dbEntity?.toDomain()
+        val effectiveTrack = if (dbTrack != null) {
+            track.copy(
+                localPath = dbTrack.localPath ?: track.localPath,
+                telegramChatId = dbTrack.telegramChatId ?: track.telegramChatId,
+                telegramMessageId = dbTrack.telegramMessageId ?: track.telegramMessageId,
+                telegramFileId = dbTrack.telegramFileId ?: track.telegramFileId,
+                telegramRemoteFileId = dbTrack.telegramRemoteFileId ?: track.telegramRemoteFileId,
+                telegramRemoteUniqueId = dbTrack.telegramRemoteUniqueId ?: track.telegramRemoteUniqueId,
+                mimeType = dbTrack.mimeType ?: track.mimeType,
+                fileSizeBytes = maxOf(dbTrack.fileSizeBytes, track.fileSizeBytes),
+                artworkUri = dbTrack.artworkUri ?: track.artworkUri
+            )
+        } else {
+            track
+        }
+        val expectedSize = effectiveTrack.fileSizeBytes
+
+        val existingPath = effectiveTrack.localPath
+        if (!existingPath.isNullOrBlank()) {
+            if (existingPath.startsWith("content://")) {
+                val now = System.currentTimeMillis()
+                runCatching {
+                    trackDao.updateVerifiedLocalAudio(
+                        trackId = effectiveTrack.id,
+                        localPath = existingPath,
+                        status = DownloadStatus.COMPLETED.name,
+                        progress = 1f,
+                        verifiedAtMs = now
+                    )
+                }
+                return effectiveTrack.copy(
+                    downloadStatus = DownloadStatus.COMPLETED,
+                    downloadProgress = 1f,
+                    lastVerifiedAtEpochMs = now
+                )
+            }
+            val candidateFile = toLocalFile(existingPath)
+            if (isValidLocalFile(candidateFile, expectedSize)) {
+                val now = System.currentTimeMillis()
+                val canonical = candidateFile!!.absolutePath
+                runCatching {
+                    trackDao.updateVerifiedLocalAudio(
+                        trackId = effectiveTrack.id,
+                        localPath = canonical,
+                        status = DownloadStatus.COMPLETED.name,
+                        progress = 1f,
+                        verifiedAtMs = now
+                    )
+                }
+                return effectiveTrack.copy(
+                    localPath = canonical,
+                    downloadStatus = DownloadStatus.COMPLETED,
+                    downloadProgress = 1f,
+                    lastVerifiedAtEpochMs = now
+                )
+            }
+        }
+
+        val persistentCacheFile = storageManager?.let { mgr ->
+            File(
+                mgr.getPersistentTelegramAudioCacheDir(),
+                buildPersistentCacheFileName(
+                    chatId = effectiveTrack.telegramChatId,
+                    messageId = effectiveTrack.telegramMessageId,
+                    fileName = effectiveTrack.fileName,
+                    format = effectiveTrack.format,
+                    trackId = effectiveTrack.id
+                )
+            )
+        }
+        if (persistentCacheFile != null && isValidLocalFile(persistentCacheFile, expectedSize)) {
+            val now = System.currentTimeMillis()
+            val canonical = persistentCacheFile.absolutePath
+            runCatching {
+                trackDao.updateVerifiedLocalAudio(
+                    trackId = effectiveTrack.id,
+                    localPath = canonical,
+                    status = DownloadStatus.COMPLETED.name,
+                    progress = 1f,
+                    verifiedAtMs = now
+                )
+            }
+            return effectiveTrack.copy(
+                localPath = canonical,
+                downloadStatus = DownloadStatus.COMPLETED,
+                downloadProgress = 1f,
+                lastVerifiedAtEpochMs = now
+            )
+        }
+        return null
+    }
+
     /**
-     * Architectural recovery pipeline for PERSONAL_TELEGRAM playback:
-     * 1. Validate any existing local path or persistent cache file first.
-     * 2. If missing/invalid, recover current TdApi.File via GetMessage(chatId, messageId) -> GetRemoteFile fallback.
-     * 3. Start TDLib download and monitor UpdateFile + GetFile watchdog until download completes.
-     * 4. Verify audio integrity, copy atomically to persistent cache, update Room, and return valid local Track.
+     * Progressive playback resolution:
+     * 1. Plays immediately if a verified local/persistent cached file exists.
+     * 2. Otherwise recovers the freshest TDLib file handle (GetMessage -> GetRemoteFile -> GetFile)
+     *    within strict 5-7.5s bounds and returns a `tg://` progressive stream URI WITHOUT waiting
+     *    for the whole file to download.
+     */
+    suspend fun resolveForProgressiveStream(track: Track): Result<ProgressiveTelegramResolution> {
+        findExistingLocalAudioTrack(track)?.let { localTrack ->
+            val path = localTrack.localPath
+            if (!path.isNullOrBlank()) {
+                val playUri = if (path.startsWith("content://") || path.startsWith("file://")) {
+                    path
+                } else {
+                    Uri.fromFile(File(path)).toString()
+                }
+                return Result.success(
+                    ProgressiveTelegramResolution(
+                        track = localTrack,
+                        playUri = playUri,
+                        isLocalFile = true,
+                        mimeType = localTrack.mimeType
+                    )
+                )
+            }
+        }
+
+        val dbEntity = trackDao.getTrackById(track.id)
+            ?: if (track.telegramChatId != null && track.telegramMessageId != null) {
+                trackDao.findByTelegramMessage(track.telegramChatId, track.telegramMessageId)
+            } else {
+                null
+            }
+        val dbTrack = dbEntity?.toDomain()
+        val effectiveTrack = if (dbTrack != null) {
+            track.copy(
+                localPath = dbTrack.localPath ?: track.localPath,
+                telegramChatId = dbTrack.telegramChatId ?: track.telegramChatId,
+                telegramMessageId = dbTrack.telegramMessageId ?: track.telegramMessageId,
+                telegramFileId = dbTrack.telegramFileId ?: track.telegramFileId,
+                telegramRemoteFileId = dbTrack.telegramRemoteFileId ?: track.telegramRemoteFileId,
+                telegramRemoteUniqueId = dbTrack.telegramRemoteUniqueId ?: track.telegramRemoteUniqueId,
+                mimeType = dbTrack.mimeType ?: track.mimeType,
+                fileSizeBytes = maxOf(dbTrack.fileSizeBytes, track.fileSizeBytes),
+                artworkUri = dbTrack.artworkUri ?: track.artworkUri
+            )
+        } else {
+            track
+        }
+
+        val ready = waitForReady?.invoke() ?: true
+        if (!ready) {
+            return Result.failure(IOException("Telegram chưa kết nối. Vui lòng kiểm tra mạng hoặc đăng nhập Telegram."))
+        }
+
+        val expectedSize = effectiveTrack.fileSizeBytes
+        val chatId = effectiveTrack.telegramChatId?.takeIf { it != 0L }
+        val messageId = effectiveTrack.telegramMessageId?.takeIf { it != 0L }
+        val remoteId = effectiveTrack.telegramRemoteFileId?.takeIf { it.isNotBlank() }
+        val fileId = effectiveTrack.telegramFileId?.takeIf { it > 0 } ?: 0
+
+        var freshFile: TdApi.File? = null
+        var extractedThumb: TdApi.File? = null
+        var extractedMime: String? = effectiveTrack.mimeType
+        var messageDeletedOrInaccessible = false
+        var lastErrorMsg: String? = null
+
+        // Try existing fileId via fast local/TDLib check first when available
+        if (fileId > 0) {
+            val res = client.getFile(fileId, timeoutMs = 4_000L)
+            val f = res.getOrNull()
+            if (f != null && f.id > 0) {
+                val matchesRemote = remoteId.isNullOrBlank() || f.remote?.id.isNullOrBlank() || f.remote?.id == remoteId
+                if (matchesRemote) freshFile = f
+            }
+        }
+
+        if (freshFile == null && chatId != null && messageId != null) {
+            val msgRes = executeWithFloodRetry { client.getMessage(chatId, messageId, timeoutMs = 6_500L) }
+            msgRes.onSuccess { msg ->
+                val extracted = extractFilesFromMessage(msg)
+                freshFile = extracted?.first
+                extractedThumb = extracted?.second
+                extractedMime = extractMimeTypeFromMessage(msg) ?: extractedMime
+                if (freshFile == null) {
+                    messageDeletedOrInaccessible = true
+                    lastErrorMsg = "Tin nhắn Telegram không còn chứa tệp âm thanh."
+                }
+            }.onFailure { err ->
+                lastErrorMsg = err.message
+                if (isDeletedOrAccessDeniedError(err)) {
+                    messageDeletedOrInaccessible = true
+                }
+            }
+        }
+
+        if (freshFile == null && !remoteId.isNullOrBlank()) {
+            val candidateTypes = buildList<TdApi.FileType> {
+                if (effectiveTrack.isVoiceMessage) add(TdApi.FileTypeVoiceNote())
+                add(TdApi.FileTypeAudio())
+                add(TdApi.FileTypeDocument())
+                add(TdApi.FileTypeUnknown())
+            }
+            for (ft in candidateTypes) {
+                val res = executeWithFloodRetry { client.getRemoteFile(remoteId, ft, timeoutMs = 5_500L) }
+                val f = res.getOrNull()
+                if (f != null && f.id > 0) {
+                    freshFile = f
+                    break
+                } else {
+                    res.exceptionOrNull()?.let { lastErrorMsg = it.message }
+                }
+            }
+        }
+
+        val targetFile = freshFile ?: return Result.failure(
+            IOException(
+                if (messageDeletedOrInaccessible) {
+                    "Tin nhắn gốc đã bị xóa hoặc bạn không còn quyền truy cập '${effectiveTrack.title}'."
+                } else {
+                    "Không thể kết nối luồng Telegram cho '${effectiveTrack.title}': ${lastErrorMsg ?: "vui lòng thử lại"}"
+                }
+            )
+        )
+
+        val resolvedRemoteId = targetFile.remote?.id?.takeIf { it.isNotBlank() } ?: remoteId
+        val resolvedUniqueId = targetFile.remote?.uniqueId?.takeIf { it.isNotBlank() } ?: effectiveTrack.telegramRemoteUniqueId
+        val updatedSize = maxOf(expectedSize, targetFile.size, targetFile.expectedSize)
+
+        persistUpdatedFileRef(
+            trackId = effectiveTrack.id,
+            fileId = targetFile.id,
+            fileSize = updatedSize,
+            chatId = chatId,
+            messageId = messageId,
+            remoteFileId = resolvedRemoteId,
+            remoteUniqueId = resolvedUniqueId,
+            mimeType = extractedMime,
+            existingFileId = -1,
+            existingRemoteId = effectiveTrack.telegramRemoteFileId
+        )
+
+        val refreshedArt = refreshMissingArtworkIfNeeded(
+            trackId = effectiveTrack.id,
+            currentArtworkUri = effectiveTrack.artworkUri,
+            thumbFile = extractedThumb
+        )
+        val finalArtworkUri = refreshedArt ?: effectiveTrack.artworkUri
+
+        // If TDLib already holds a complete local file, copy to persistent cache and play locally right away
+        if (isUsableCompletedLocalFile(targetFile, updatedSize)) {
+            val promoted = promoteCompletedTdFileToPersistentCache(effectiveTrack, targetFile, extractedMime, finalArtworkUri)
+            if (promoted != null && !promoted.localPath.isNullOrBlank()) {
+                return Result.success(
+                    ProgressiveTelegramResolution(
+                        track = promoted,
+                        playUri = Uri.fromFile(File(promoted.localPath)).toString(),
+                        isLocalFile = true,
+                        mimeType = extractedMime
+                    )
+                )
+            }
+        }
+
+        val streamUri = buildStreamUri(
+            fileId = targetFile.id,
+            fileSize = updatedSize,
+            chatId = chatId,
+            messageId = messageId,
+            remoteFileId = resolvedRemoteId,
+            trackId = effectiveTrack.id
+        )
+        val updatedTrack = effectiveTrack.copy(
+            streamUri = streamUri,
+            telegramFileId = targetFile.id,
+            telegramRemoteFileId = resolvedRemoteId,
+            telegramRemoteUniqueId = resolvedUniqueId,
+            mimeType = extractedMime,
+            fileSizeBytes = updatedSize,
+            artworkUri = finalArtworkUri
+        )
+        logger.log("TG_STREAM", "INFO", "Sẵn sàng phát progressive Telegram fileId=${targetFile.id} cho '${effectiveTrack.title}'")
+        return Result.success(
+            ProgressiveTelegramResolution(
+                track = updatedTrack,
+                playUri = streamUri,
+                isLocalFile = false,
+                mimeType = extractedMime
+            )
+        )
+    }
+
+    suspend fun promoteCompletedTdFileToPersistentCache(
+        track: Track,
+        completedTdFile: TdApi.File,
+        extractedMime: String? = track.mimeType,
+        artworkUri: String? = track.artworkUri
+    ): Track? {
+        val tdLocalPath = completedTdFile.local?.path?.takeIf { it.isNotBlank() } ?: return null
+        val tdLocalFile = File(tdLocalPath)
+        val expectedSize = maxOf(track.fileSizeBytes, completedTdFile.size, completedTdFile.expectedSize)
+        if (!isValidLocalFile(tdLocalFile, expectedSize)) return null
+
+        val finalLocalFile = if (storageManager != null) {
+            val targetName = buildPersistentCacheFileName(
+                chatId = track.telegramChatId,
+                messageId = track.telegramMessageId,
+                fileName = track.fileName,
+                format = track.format,
+                trackId = track.id
+            )
+            storageManager.copyFileToPersistentAudioCache(
+                sourceFile = tdLocalFile,
+                targetDir = storageManager.getPersistentTelegramAudioCacheDir(),
+                targetFileName = targetName,
+                expectedSizeBytes = expectedSize
+            ) ?: tdLocalFile
+        } else {
+            tdLocalFile
+        }
+        if (!isValidLocalFile(finalLocalFile, expectedSize)) return null
+
+        val finalPath = finalLocalFile.absolutePath
+        val now = System.currentTimeMillis()
+        val finalRemote = completedTdFile.remote?.id?.takeIf { it.isNotBlank() } ?: track.telegramRemoteFileId
+        val finalUnique = completedTdFile.remote?.uniqueId?.takeIf { it.isNotBlank() } ?: track.telegramRemoteUniqueId
+        val rebuiltUri = buildStreamUri(
+            fileId = completedTdFile.id,
+            fileSize = expectedSize,
+            chatId = track.telegramChatId,
+            messageId = track.telegramMessageId,
+            remoteFileId = finalRemote,
+            trackId = track.id
+        )
+        val probed = runCatching { AudioFormatDetector.probeAudioSpecs(finalLocalFile, track.format) }.getOrNull()
+        val embeddedArtPath = if (artworkUri.isNullOrBlank()) {
+            probed?.embeddedArtwork?.let { bytes -> storageManager?.saveArtworkFile(track.id, bytes) }
+        } else {
+            null
+        }
+        val finalArtworkUri = artworkUri ?: embeddedArtPath ?: track.artworkUri
+
+        runCatching {
+            trackDao.updateVerifiedLocalAudio(
+                trackId = track.id,
+                localPath = finalPath,
+                status = DownloadStatus.COMPLETED.name,
+                progress = 1f,
+                verifiedAtMs = now,
+                fileId = completedTdFile.id,
+                remoteFileId = finalRemote,
+                remoteUniqueId = finalUnique,
+                streamUri = rebuiltUri
+            )
+            if (probed != null || finalArtworkUri != track.artworkUri) {
+                trackDao.updateTrackMetadata(
+                    trackId = track.id,
+                    artworkUri = finalArtworkUri,
+                    bitrateKbps = probed?.bitrateKbps ?: 0,
+                    sampleRateHz = probed?.sampleRateHz ?: 0,
+                    bitDepth = probed?.bitDepth,
+                    durationMs = probed?.durationMs ?: 0L
+                )
+            }
+        }
+        return track.copy(
+            localPath = finalPath,
+            streamUri = rebuiltUri,
+            telegramFileId = completedTdFile.id,
+            telegramRemoteFileId = finalRemote,
+            telegramRemoteUniqueId = finalUnique,
+            mimeType = extractedMime,
+            artworkUri = finalArtworkUri,
+            bitrateKbps = probed?.bitrateKbps?.takeIf { it > 0 } ?: track.bitrateKbps,
+            sampleRateHz = probed?.sampleRateHz?.takeIf { it > 0 } ?: track.sampleRateHz,
+            bitDepth = probed?.bitDepth ?: track.bitDepth,
+            durationMs = probed?.durationMs?.takeIf { it > 0L } ?: track.durationMs,
+            downloadStatus = DownloadStatus.COMPLETED,
+            downloadProgress = 1f,
+            lastVerifiedAtEpochMs = now
+        )
+    }
+
+    suspend fun promoteCompletedTdFileById(trackId: String, completedTdFile: TdApi.File) {
+        val entity = trackDao.getTrackById(trackId) ?: return
+        promoteCompletedTdFileToPersistentCache(entity.toDomain(), completedTdFile)
+    }
+
+    /**
+     * Full verified local recovery (used for offline downloads or full verification).
      */
     suspend fun ensureVerifiedLocalAudioFile(
         track: Track,
         onProgress: ((Float) -> Unit)? = null
     ): Result<Track> {
+        findExistingLocalAudioTrack(track)?.let { return Result.success(it) }
+
         val dbEntity = trackDao.getTrackById(track.id)
             ?: if (track.telegramChatId != null && track.telegramMessageId != null) {
                 trackDao.findByTelegramMessage(track.telegramChatId, track.telegramMessageId)
@@ -156,87 +549,6 @@ class TelegramFileResolver(
 
         val expectedSize = effectiveTrack.fileSizeBytes
 
-        // 1A. Verify existing saved localPath
-        val existingPath = effectiveTrack.localPath
-        if (!existingPath.isNullOrBlank()) {
-            if (existingPath.startsWith("content://")) {
-                val now = System.currentTimeMillis()
-                runCatching {
-                    trackDao.updateVerifiedLocalAudio(
-                        trackId = effectiveTrack.id,
-                        localPath = existingPath,
-                        status = DownloadStatus.COMPLETED.name,
-                        progress = 1f,
-                        verifiedAtMs = now
-                    )
-                }
-                return Result.success(
-                    effectiveTrack.copy(
-                        downloadStatus = DownloadStatus.COMPLETED,
-                        downloadProgress = 1f,
-                        lastVerifiedAtEpochMs = now
-                    )
-                )
-            }
-            val candidateFile = toLocalFile(existingPath)
-            if (isValidLocalFile(candidateFile, expectedSize)) {
-                val now = System.currentTimeMillis()
-                val canonical = candidateFile!!.absolutePath
-                runCatching {
-                    trackDao.updateVerifiedLocalAudio(
-                        trackId = effectiveTrack.id,
-                        localPath = canonical,
-                        status = DownloadStatus.COMPLETED.name,
-                        progress = 1f,
-                        verifiedAtMs = now
-                    )
-                }
-                return Result.success(
-                    effectiveTrack.copy(
-                        localPath = canonical,
-                        downloadStatus = DownloadStatus.COMPLETED,
-                        downloadProgress = 1f,
-                        lastVerifiedAtEpochMs = now
-                    )
-                )
-            }
-        }
-
-        // 1B. Check deterministic persistent Telegram cache directory before hitting network
-        val persistentCacheFile = storageManager?.let { mgr ->
-            File(
-                mgr.getPersistentTelegramAudioCacheDir(),
-                buildPersistentCacheFileName(
-                    chatId = effectiveTrack.telegramChatId,
-                    messageId = effectiveTrack.telegramMessageId,
-                    fileName = effectiveTrack.fileName,
-                    format = effectiveTrack.format,
-                    trackId = effectiveTrack.id
-                )
-            )
-        }
-        if (persistentCacheFile != null && isValidLocalFile(persistentCacheFile, expectedSize)) {
-            val now = System.currentTimeMillis()
-            val canonical = persistentCacheFile.absolutePath
-            runCatching {
-                trackDao.updateVerifiedLocalAudio(
-                    trackId = effectiveTrack.id,
-                    localPath = canonical,
-                    status = DownloadStatus.COMPLETED.name,
-                    progress = 1f,
-                    verifiedAtMs = now
-                )
-            }
-            return Result.success(
-                effectiveTrack.copy(
-                    localPath = canonical,
-                    downloadStatus = DownloadStatus.COMPLETED,
-                    downloadProgress = 1f,
-                    lastVerifiedAtEpochMs = now
-                )
-            )
-        }
-
         // 2. Ensure TDLib is ready if user just opened the app
         waitForReady?.invoke()
 
@@ -253,7 +565,7 @@ class TelegramFileResolver(
 
         // 3A. Recover via GetMessage(chatId, messageId) first for freshest message & file reference
         if (chatId != null && messageId != null) {
-            val msgRes = executeWithFloodRetry { client.getMessage(chatId, messageId, timeoutMs = 12_000L) }
+            val msgRes = executeWithFloodRetry { client.getMessage(chatId, messageId, timeoutMs = 6_500L) }
             msgRes.onSuccess { msg ->
                 val extracted = extractFilesFromMessage(msg)
                 freshFile = extracted?.first
@@ -280,7 +592,7 @@ class TelegramFileResolver(
                 add(TdApi.FileTypeUnknown())
             }
             for (ft in candidateTypes) {
-                val res = executeWithFloodRetry { client.getRemoteFile(remoteId, ft, timeoutMs = 10_000L) }
+                val res = executeWithFloodRetry { client.getRemoteFile(remoteId, ft, timeoutMs = 6_000L) }
                 val f = res.getOrNull()
                 if (f != null && f.id > 0) {
                     freshFile = f
@@ -295,7 +607,7 @@ class TelegramFileResolver(
 
         // 3C. Fallback to existing fileId if still viable
         if (freshFile == null && fileId > 0) {
-            val res = executeWithFloodRetry { client.getFile(fileId, timeoutMs = 9_000L) }
+            val res = executeWithFloodRetry { client.getFile(fileId, timeoutMs = 5_500L) }
             val f = res.getOrNull()
             if (f != null && f.id > 0) {
                 val matchesRemote = remoteId.isNullOrBlank() || f.remote?.id.isNullOrBlank() || f.remote?.id == remoteId
@@ -349,7 +661,7 @@ class TelegramFileResolver(
                     offset = 0L,
                     limit = 0L,
                     synchronous = false,
-                    timeoutMs = 10_000L
+                    timeoutMs = 6_500L
                 )
             }.getOrElse { err ->
                 return Result.failure(
@@ -478,12 +790,13 @@ class TelegramFileResolver(
         }
 
         try {
-            val startedAt = System.currentTimeMillis()
             var lastDownloaded = -1L
-            var stallCycles = 0
+            var lastProgressAtMs = System.currentTimeMillis()
+            var retriedStall = false
+            val maxStallMs = 7_500L
 
-            while (System.currentTimeMillis() - startedAt < 50_000L) {
-                val nextUpdate = withTimeoutOrNull(650L) { updateChannel.receive() }
+            while (System.currentTimeMillis() - lastProgressAtMs < maxStallMs) {
+                val nextUpdate = withTimeoutOrNull(450L) { updateChannel.receive() }
                     ?: client.getFile(fileId, timeoutMs = 4_000L).getOrNull()
 
                 if (nextUpdate != null) {
@@ -498,23 +811,20 @@ class TelegramFileResolver(
                         onProgress?.invoke(1f)
                         return@coroutineScope Result.success(nextUpdate)
                     }
-                    if (downloaded == lastDownloaded) {
-                        stallCycles++
-                        if (stallCycles >= 10) {
-                            logger.log("TG_RECOVER", "WARN", "Tiếp tục tải tệp Telegram #$fileId cho '$trackTitle'")
-                            client.downloadFile(fileId, 32, 0L, 0L, false, timeoutMs = 5_000L)
-                            stallCycles = 0
-                        }
-                    } else {
+                    if (downloaded > lastDownloaded) {
                         lastDownloaded = downloaded
-                        stallCycles = 0
+                        lastProgressAtMs = System.currentTimeMillis()
+                        retriedStall = false
+                    } else if (!retriedStall && System.currentTimeMillis() - lastProgressAtMs >= 3_500L) {
+                        retriedStall = true
+                        logger.log("TG_RECOVER", "WARN", "Tiếp tục tải tệp Telegram #$fileId cho '$trackTitle' (thử lại 1 lần)")
+                        client.downloadFile(fileId, 32, 0L, 0L, false, timeoutMs = 5_000L)
                     }
                 } else {
-                    stallCycles++
                     delay(150L)
                 }
             }
-            Result.failure(IOException("Hết thời gian tải tệp Telegram '$trackTitle' (vui lòng kiểm tra mạng)"))
+            Result.failure(IOException("Hết thời gian tải tệp Telegram '$trackTitle' (mạng không phản hồi)"))
         } finally {
             collectorJob.cancel()
             updateChannel.close()

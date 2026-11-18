@@ -86,7 +86,6 @@ interface TrackDao {
         SELECT COUNT(DISTINCT telegramMessageId) FROM tracks
         WHERE telegramChatId = :chatId
           AND source = 'TELEGRAM'
-          AND telegramOrigin = 'PERSONAL_TELEGRAM'
           AND telegramMessageId IS NOT NULL
     """)
     suspend fun countDistinctTelegramTracksForChat(chatId: Long): Int
@@ -96,32 +95,16 @@ interface TrackDao {
         WHERE telegramChatId = :chatId
           AND telegramThreadId = :threadId
           AND source = 'TELEGRAM'
-          AND telegramOrigin = 'PERSONAL_TELEGRAM'
           AND telegramMessageId IS NOT NULL
     """)
     suspend fun countDistinctTelegramTracksForTopic(chatId: Long, threadId: Long): Int
 
-    @Query("""
-        SELECT COUNT(*) FROM tracks
-        WHERE source = 'TELEGRAM'
-          AND telegramOrigin = 'PUBLIC_TELEGRAM'
-          AND publicChannelUsername = :username
-    """)
-    suspend fun countPublicTracksForChannel(username: String): Int
-
-    @Query("DELETE FROM tracks WHERE source = 'TELEGRAM' AND telegramOrigin = 'PERSONAL_TELEGRAM'")
+    @Query("DELETE FROM tracks WHERE source = 'TELEGRAM'")
     suspend fun deletePersonalTelegramTracks()
-
-    @Query("DELETE FROM tracks WHERE source = 'TELEGRAM' AND telegramOrigin = 'PUBLIC_TELEGRAM' AND publicChannelUsername = :username")
-    suspend fun deleteTracksForPublicChannel(username: String)
-
-    @Query("SELECT * FROM tracks WHERE source = 'TELEGRAM' AND telegramOrigin = 'PUBLIC_TELEGRAM' AND publicChannelUsername = :username ORDER BY telegramMessageId DESC, dateAddedEpochMs DESC")
-    fun observeTracksForPublicChannel(username: String): Flow<List<TrackEntity>>
 
     @Query("""
         SELECT * FROM tracks
         WHERE source = 'TELEGRAM'
-          AND telegramOrigin = 'PERSONAL_TELEGRAM'
           AND telegramChatId = :chatId
           AND (telegramRemoteFileId IS NULL OR telegramRemoteFileId = '' OR telegramRemoteUniqueId IS NULL OR telegramRemoteUniqueId = '')
     """)
@@ -333,43 +316,4 @@ interface ActivityLogDao {
 
     @Query("DELETE FROM activity_logs")
     suspend fun clearLogs()
-}
-
-@Dao
-interface PublicChannelDao {
-    @Query("SELECT * FROM public_channels ORDER BY lastSyncedEpochMs DESC, displayTitle ASC")
-    fun observePublicChannels(): Flow<List<PublicChannelEntity>>
-
-    @Query("SELECT * FROM public_channels ORDER BY lastSyncedEpochMs DESC, displayTitle ASC")
-    suspend fun getPublicChannelsOnce(): List<PublicChannelEntity>
-
-    @Query("SELECT * FROM public_channels WHERE channelKey = :channelKey LIMIT 1")
-    suspend fun getChannel(channelKey: String): PublicChannelEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertChannel(channel: PublicChannelEntity)
-
-    @Query("UPDATE public_channels SET isPaused = :paused, syncStatus = :status WHERE channelKey = :channelKey")
-    suspend fun setPaused(channelKey: String, paused: Boolean, status: String)
-
-    @Query("""
-        UPDATE public_channels SET
-            syncStatus = :status,
-            discoveredCount = :discoveredCount,
-            lastSyncedEpochMs = CASE WHEN :lastSyncedEpochMs > 0 THEN :lastSyncedEpochMs ELSE lastSyncedEpochMs END,
-            lastCursor = COALESCE(:cursor, lastCursor),
-            lastError = :error
-        WHERE channelKey = :channelKey
-    """)
-    suspend fun updateSyncState(
-        channelKey: String,
-        status: String,
-        discoveredCount: Int,
-        lastSyncedEpochMs: Long,
-        cursor: String?,
-        error: String?
-    )
-
-    @Query("DELETE FROM public_channels WHERE channelKey = :channelKey")
-    suspend fun deleteChannel(channelKey: String)
 }

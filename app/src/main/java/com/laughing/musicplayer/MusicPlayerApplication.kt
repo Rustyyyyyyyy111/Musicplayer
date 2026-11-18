@@ -17,7 +17,6 @@ import com.laughing.musicplayer.data.local.SettingsDataStore
 import com.laughing.musicplayer.data.storage.CacheManager
 import com.laughing.musicplayer.data.storage.OfflineMusicRepository
 import com.laughing.musicplayer.data.storage.UnifiedStorageManager
-import com.laughing.musicplayer.data.telegram.PublicTelegramRepository
 import com.laughing.musicplayer.data.telegram.TelegramAuthentication
 import com.laughing.musicplayer.data.telegram.TelegramChatBrowser
 import com.laughing.musicplayer.data.telegram.TelegramCore
@@ -81,7 +80,7 @@ class AppContainer(context: Context) {
         database.telegramDao().clearAllSources()
         database.telegramDao().clearAllTopics()
         database.telegramDao().clearAllCheckpoints()
-        activityLogger.log("TG_AUTH", "INFO", "Đã dọn dữ liệu Telegram cá nhân khi đăng xuất (giữ nguyên Kênh công khai)")
+        activityLogger.log("TG_AUTH", "INFO", "Đã dọn dữ liệu Telegram khi đăng xuất")
     }
     val telegramFileResolver = TelegramFileResolver(
         telegramCore,
@@ -145,17 +144,6 @@ class AppContainer(context: Context) {
         activityLogger
     )
 
-    val publicTelegramRepository = PublicTelegramRepository(
-        appContext,
-        database.publicChannelDao(),
-        database.trackDao(),
-        database.downloadCacheDao(),
-        settingsDataStore,
-        storageManager,
-        { networkProxyManager.getHttpClient() },
-        activityLogger
-    )
-
     val playerController = DualPlayerCrossfadeController(
         appContext,
         telegramCore,
@@ -166,8 +154,7 @@ class AppContainer(context: Context) {
         settingsDataStore,
         playlistAndSmartMixManager,
         networkProxyManager,
-        activityLogger,
-        publicTelegramRepository
+        activityLogger
     )
 
     @Volatile
@@ -200,18 +187,6 @@ class AppContainer(context: Context) {
                 }
         }
         observeTelegramStartupAutoSync()
-        observePublicChannelStartupSync()
-    }
-
-    private fun observePublicChannelStartupSync() {
-        if (isRobolectricEnvironment()) return
-        appScope.launch {
-            runCatching {
-                publicTelegramRepository.syncAllEnabledChannels()
-            }.onFailure { err ->
-                activityLogger.log("PUBLIC_TG", "WARN", "Bỏ qua đồng bộ kênh công khai khi khởi động: ${err.message}")
-            }
-        }
     }
 
     private fun observeTelegramStartupAutoSync() {

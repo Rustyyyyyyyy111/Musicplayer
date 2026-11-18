@@ -88,7 +88,6 @@ import com.laughing.musicplayer.ui.screens.EqualizerScreen
 import com.laughing.musicplayer.ui.screens.LibraryScreen
 import com.laughing.musicplayer.ui.screens.ListenNowScreen
 import com.laughing.musicplayer.ui.screens.NowPlayingSheet
-import com.laughing.musicplayer.ui.screens.PublicTelegramChannelsScreen
 import com.laughing.musicplayer.ui.screens.SearchScreen
 import com.laughing.musicplayer.ui.screens.SettingsScreen
 import com.laughing.musicplayer.ui.screens.TelegramAuthScreen
@@ -110,7 +109,6 @@ import kotlinx.serialization.Serializable
 @Serializable object TelegramAuthRoute
 @Serializable object YouTubeAuthRoute
 @Serializable data class TelegramSourcePickerRoute(val filterTypeName: String? = null)
-@Serializable object PublicChannelsRoute
 @Serializable data class TopicTracksRoute(val chatId: Long, val threadId: Long, val topicTitle: String)
 @Serializable data class YouTubePlaylistDetailRoute(
     val id: String,
@@ -324,6 +322,7 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                             FloatingMiniPlayer(
                                                 track = currentTrack,
                                                 isPlaying = playback.isPlaying,
+                                                isBuffering = playback.isBuffering,
                                                 progress = progress,
                                                 onTap = { showNowPlaying = true },
                                                 onTogglePlayPause = { viewModel.togglePlayPause() },
@@ -463,9 +462,6 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                         onOpenSourcePicker = { chatType ->
                                             navController.navigate(TelegramSourcePickerRoute(chatType?.name))
                                         },
-                                        onOpenPublicChannels = {
-                                            navController.navigate(PublicChannelsRoute)
-                                        },
                                         onOpenYouTubeSearch = {
                                             viewModel.selectSearchTab(UnifiedSearchTab.YOUTUBE_MUSIC)
                                             navigateTopTab(SearchRoute)
@@ -511,13 +507,6 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                         onOpenTopicTracks = { chatId, threadId, title ->
                                             navController.navigate(TopicTracksRoute(chatId, threadId, title))
                                         }
-                                    )
-                                }
-
-                                composable<PublicChannelsRoute> {
-                                    PublicTelegramChannelsScreen(
-                                        viewModel = viewModel,
-                                        onBack = { navController.popBackStack() }
                                     )
                                 }
 

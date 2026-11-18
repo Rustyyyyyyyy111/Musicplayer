@@ -10,11 +10,8 @@ import com.laughing.musicplayer.core.model.DownloadStatus
 import com.laughing.musicplayer.core.model.GenreType
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.PlaylistItem
-import com.laughing.musicplayer.core.model.PublicChannelItem
-import com.laughing.musicplayer.core.model.PublicSyncStatus
 import com.laughing.musicplayer.core.model.TelegramChatItem
 import com.laughing.musicplayer.core.model.TelegramChatType
-import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.TelegramTopicItem
 import com.laughing.musicplayer.core.model.Track
 
@@ -22,8 +19,6 @@ import com.laughing.musicplayer.core.model.Track
     tableName = "tracks",
     indices = [
         Index(value = ["source"]),
-        Index(value = ["telegramOrigin"]),
-        Index(value = ["publicChannelUsername"]),
         Index(value = ["telegramChatId", "telegramThreadId"]),
         Index(value = ["telegramChatId", "telegramMessageId"], unique = true),
         Index(value = ["fileHash"]),
@@ -55,8 +50,6 @@ data class TrackEntity(
     val telegramRemoteUniqueId: String? = null,
     val mimeType: String? = null,
     val lastVerifiedAtEpochMs: Long = 0L,
-    val telegramOrigin: String = TelegramOrigin.PERSONAL_TELEGRAM.name,
-    val publicChannelUsername: String? = null,
     val telegramThreadId: Long?,
     val telegramTopicName: String?,
     val youtubeVideoId: String?,
@@ -98,8 +91,6 @@ data class TrackEntity(
         telegramRemoteUniqueId = telegramRemoteUniqueId,
         mimeType = mimeType,
         lastVerifiedAtEpochMs = lastVerifiedAtEpochMs,
-        telegramOrigin = runCatching { TelegramOrigin.valueOf(telegramOrigin) }.getOrDefault(TelegramOrigin.PERSONAL_TELEGRAM),
-        publicChannelUsername = publicChannelUsername,
         telegramThreadId = telegramThreadId,
         telegramTopicName = telegramTopicName,
         youtubeVideoId = youtubeVideoId,
@@ -142,8 +133,6 @@ fun Track.toEntity(searchBlob: String): TrackEntity = TrackEntity(
     telegramRemoteUniqueId = telegramRemoteUniqueId,
     mimeType = mimeType,
     lastVerifiedAtEpochMs = lastVerifiedAtEpochMs,
-    telegramOrigin = telegramOrigin.name,
-    publicChannelUsername = publicChannelUsername,
     telegramThreadId = telegramThreadId,
     telegramTopicName = telegramTopicName,
     youtubeVideoId = youtubeVideoId,
@@ -299,34 +288,5 @@ data class ActivityLogEntity(
         category = category,
         level = level,
         message = message
-    )
-}
-
-@Entity(tableName = "public_channels")
-data class PublicChannelEntity(
-    @PrimaryKey val channelKey: String,
-    val channelId: Long? = null,
-    val username: String,
-    val displayTitle: String,
-    val avatarUrl: String? = null,
-    val discoveredCount: Int = 0,
-    val lastSyncedEpochMs: Long = 0L,
-    val syncStatus: String = PublicSyncStatus.IDLE.name,
-    val isPaused: Boolean = false,
-    val lastCursor: String? = null,
-    val lastError: String? = null
-) {
-    fun toDomain(): PublicChannelItem = PublicChannelItem(
-        channelKey = channelKey,
-        channelId = channelId,
-        username = username,
-        displayTitle = displayTitle,
-        avatarUrl = avatarUrl,
-        discoveredCount = discoveredCount,
-        lastSyncedEpochMs = lastSyncedEpochMs,
-        syncStatus = runCatching { PublicSyncStatus.valueOf(syncStatus) }.getOrDefault(PublicSyncStatus.IDLE),
-        isPaused = isPaused,
-        lastCursor = lastCursor,
-        lastError = lastError
     )
 }

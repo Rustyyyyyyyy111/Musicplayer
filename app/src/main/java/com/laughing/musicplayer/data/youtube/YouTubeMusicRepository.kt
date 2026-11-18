@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.Request
@@ -118,8 +120,13 @@ class YouTubeMusicRepository(
                             "PUT" -> builder.put((bodyBytes ?: ByteArray(0)).toRequestBody(null))
                             else -> builder.get()
                         }
-                        val client = proxyManager.getStreamHttpClient()
-                        client.newCall(builder.build()).execute().use { resp ->
+                        val client = proxyManager.getHttpClient()
+                        val call = client.newCall(builder.build())
+                        if (Thread.currentThread().isInterrupted) {
+                            call.cancel()
+                            throw java.io.InterruptedIOException("Interrupted")
+                        }
+                        call.execute().use { resp ->
                             val bodyStr = resp.body?.string().orEmpty()
                             return NpResponse(
                                 resp.code,
@@ -142,51 +149,64 @@ class YouTubeMusicRepository(
         tab: YouTubeSearchTab
     ): Result<YouTubeSearchResult> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext Result.success(YouTubeSearchResult())
-        try {
-            withTimeout(9_000L) {
-                proxyManager.refreshHttpClient()
-                ensureInitialized()
-                val raw = executeSearchInternal(query.trim(), tab)
-                val mergedTracks = mergeAndPersistTracks(raw.tracks)
-                logger.log("YOUTUBE", "INFO", "Tìm kiếm YouTube Music '$query' (${tab.labelVi}): ${mergedTracks.size} bài, ${raw.collections.size} bộ sưu tập")
-                Result.success(YouTubeSearchResult(tracks = mergedTracks, collections = raw.collections))
+        executeWithSingleRetry(onRetryLog = {
+            logger.log("YOUTUBE", "WARN", "Tìm kiếm YouTube Music chậm, đang tự thử lại 1 lần...")
+        }) {
+            try {
+                withTimeout(STREAM_FETCH_TIMEOUT_MS) {
+                    proxyManager.refreshHttpClient()
+                    ensureInitialized()
+                    val raw = runInterruptible { executeSearchInternal(query.trim(), tab) }
+                    val mergedTracks = mergeAndPersistTracks(raw.tracks)
+                    logger.log("YOUTUBE", "INFO", "Tìm kiếm YouTube Music '$query' (${tab.labelVi}): ${mergedTracks.size} bài, ${raw.collections.size} bộ sưu tập")
+                    Result.success(YouTubeSearchResult(tracks = mergedTracks, collections = raw.collections))
+                }
+            } catch (_: TimeoutCancellationException) {
+                logger.log("YOUTUBE", "WARN", "Hết thời gian tìm kiếm YouTube Music (quá 7.5 giây)")
+                Result.failure(IOException("Hết thời gian kết nối YouTube Music"))
+            } catch (_: SocketTimeoutException) {
+                logger.log("YOUTUBE", "WARN", "Timeout socket khi tìm YouTube Music")
+                Result.failure(IOException("Mạng quá chậm, không thể tải kết quả YouTube Music"))
+            } catch (err: Exception) {
+                if (err is kotlinx.coroutines.CancellationException) throw err
+                logger.log("YOUTUBE", "ERROR", "Lỗi tìm kiếm YouTube Music: ${err.message}")
+                Result.failure(err)
             }
-        } catch (_: TimeoutCancellationException) {
-            logger.log("YOUTUBE", "WARN", "Hết thời gian tìm kiếm YouTube Music (quá 9 giây)")
-            Result.failure(IOException("Hết thời gian kết nối YouTube Music (quá 9 giây)"))
-        } catch (_: SocketTimeoutException) {
-            logger.log("YOUTUBE", "WARN", "Timeout socket khi tìm YouTube Music")
-            Result.failure(IOException("Mạng quá chậm, không thể tải kết quả YouTube Music"))
-        } catch (err: Exception) {
-            logger.log("YOUTUBE", "ERROR", "Lỗi tìm kiếm YouTube Music: ${err.message}")
-            Result.failure(err)
         }
     }
 
     suspend fun fetchExploreFeed(): Result<YouTubeExploreData> = withContext(Dispatchers.IO) {
         try {
-            withTimeout(12_000L) {
+            withTimeout(FEED_TIMEOUT_MS) {
                 proxyManager.refreshHttpClient()
                 ensureInitialized()
                 coroutineScope {
                     val chartsDeferred = async {
                         runCatching {
-                            executeSearchInternal("Top 100 Nhạc Việt Bảng Xếp Hạng", YouTubeSearchTab.SONGS).tracks
+                            runInterruptible {
+                                executeSearchInternal("Top 100 Nhạc Việt Bảng Xếp Hạng", YouTubeSearchTab.SONGS).tracks
+                            }
                         }.getOrDefault(emptyList())
                     }
                     val trendingDeferred = async {
                         runCatching {
-                            executeSearchInternal("Nhạc Việt Thịnh Hành Hot Nhất", YouTubeSearchTab.SONGS).tracks
+                            runInterruptible {
+                                executeSearchInternal("Nhạc Việt Thịnh Hành Hot Nhất", YouTubeSearchTab.SONGS).tracks
+                            }
                         }.getOrDefault(emptyList())
                     }
                     val playlistsDeferred = async {
                         runCatching {
-                            executeSearchInternal("Playlist Nhạc Việt Nổi Bật", YouTubeSearchTab.PLAYLISTS).collections
+                            runInterruptible {
+                                executeSearchInternal("Playlist Nhạc Việt Nổi Bật", YouTubeSearchTab.PLAYLISTS).collections
+                            }
                         }.getOrDefault(emptyList())
                     }
                     val albumsDeferred = async {
                         runCatching {
-                            executeSearchInternal("Album Nhạc Mới Phát Hành", YouTubeSearchTab.ALBUMS).collections
+                            runInterruptible {
+                                executeSearchInternal("Album Nhạc Mới Phát Hành", YouTubeSearchTab.ALBUMS).collections
+                            }
                         }.getOrDefault(emptyList())
                     }
 
@@ -225,6 +245,7 @@ class YouTubeMusicRepository(
         } catch (_: TimeoutCancellationException) {
             Result.failure(IOException("Hết thời gian tải Khám phá YouTube Music"))
         } catch (err: Exception) {
+            if (err is kotlinx.coroutines.CancellationException) throw err
             logger.log("YOUTUBE", "ERROR", "Lỗi tải Khám phá YouTube Music: ${err.message}")
             Result.failure(err)
         }
@@ -233,18 +254,22 @@ class YouTubeMusicRepository(
     suspend fun fetchMoodExplore(mood: YouTubeExploreMood): Result<YouTubeMoodExploreData> =
         withContext(Dispatchers.IO) {
             try {
-                withTimeout(10_000L) {
+                withTimeout(FEED_TIMEOUT_MS) {
                     proxyManager.refreshHttpClient()
                     ensureInitialized()
                     coroutineScope {
                         val songsDeferred = async {
                             runCatching {
-                                executeSearchInternal(mood.songQuery, YouTubeSearchTab.SONGS).tracks
+                                runInterruptible {
+                                    executeSearchInternal(mood.songQuery, YouTubeSearchTab.SONGS).tracks
+                                }
                             }.getOrDefault(emptyList())
                         }
                         val playlistsDeferred = async {
                             runCatching {
-                                executeSearchInternal(mood.playlistQuery, YouTubeSearchTab.PLAYLISTS).collections
+                                runInterruptible {
+                                    executeSearchInternal(mood.playlistQuery, YouTubeSearchTab.PLAYLISTS).collections
+                                }
                             }.getOrDefault(emptyList())
                         }
                         val songs = mergeAndPersistTracks(songsDeferred.await().take(20))
@@ -264,6 +289,7 @@ class YouTubeMusicRepository(
             } catch (_: TimeoutCancellationException) {
                 Result.failure(IOException("Hết thời gian tải mục ${mood.labelVi}"))
             } catch (err: Exception) {
+                if (err is kotlinx.coroutines.CancellationException) throw err
                 logger.log("YOUTUBE", "ERROR", "Lỗi tải chủ đề ${mood.labelVi}: ${err.message}")
                 Result.failure(err)
             }
@@ -272,16 +298,20 @@ class YouTubeMusicRepository(
     suspend fun fetchPlaylistTracks(collection: YouTubeCollectionResult): Result<List<Track>> =
         withContext(Dispatchers.IO) {
             try {
-                withTimeout(12_000L) {
+                withTimeout(FEED_TIMEOUT_MS) {
                     proxyManager.refreshHttpClient()
                     ensureInitialized()
 
                     val extractedTracks = if (collection.kind == YouTubeSearchTab.ARTISTS) {
-                        executeSearchInternal(collection.title, YouTubeSearchTab.SONGS).tracks
+                        runInterruptible {
+                            executeSearchInternal(collection.title, YouTubeSearchTab.SONGS).tracks
+                        }
                     } else {
                         val playlistUrl = normalizePlaylistUrl(collection.url)
                         val playlistInfo = runCatching {
-                            PlaylistInfo.getInfo(ServiceList.YouTube, playlistUrl)
+                            runInterruptible {
+                                PlaylistInfo.getInfo(ServiceList.YouTube, playlistUrl)
+                            }
                         }.getOrNull()
                         val streamItems = playlistInfo?.relatedItems
                             ?.filterIsInstance<StreamInfoItem>()
@@ -295,7 +325,9 @@ class YouTubeMusicRepository(
                             }
                         } else {
                             // Graceful fallback to YouTube Music songs query if album/artist browse URL isn't a classic list= URL
-                            executeSearchInternal(collection.title, YouTubeSearchTab.SONGS).tracks
+                            runInterruptible {
+                                executeSearchInternal(collection.title, YouTubeSearchTab.SONGS).tracks
+                            }
                         }
                     }
 
@@ -310,6 +342,7 @@ class YouTubeMusicRepository(
             } catch (_: TimeoutCancellationException) {
                 Result.failure(IOException("Hết thời gian tải danh sách phát"))
             } catch (err: Exception) {
+                if (err is kotlinx.coroutines.CancellationException) throw err
                 logger.log("YOUTUBE", "ERROR", "Lỗi tải playlist '${collection.title}': ${err.message}")
                 Result.failure(err)
             }
@@ -440,10 +473,13 @@ class YouTubeMusicRepository(
         return mergedDomain
     }
 
-    suspend fun resolveAudioStreamUrl(videoUrlOrId: String): Result<ResolvedYouTubeStream> =
-        withContext(Dispatchers.IO) {
+    suspend fun resolveAudioStreamUrl(
+        videoUrlOrId: String,
+        allowRetry: Boolean = true
+    ): Result<ResolvedYouTubeStream> = withContext(Dispatchers.IO) {
+        val attemptBlock: suspend () -> Result<ResolvedYouTubeStream> = {
             try {
-                withTimeout(9_000L) {
+                withTimeout(STREAM_FETCH_TIMEOUT_MS) {
                     proxyManager.refreshHttpClient()
                     ensureInitialized()
                     val fullUrl = if (videoUrlOrId.startsWith("http")) {
@@ -451,7 +487,7 @@ class YouTubeMusicRepository(
                     } else {
                         "https://www.youtube.com/watch?v=$videoUrlOrId"
                     }
-                    val info = StreamInfo.getInfo(ServiceList.YouTube, fullUrl)
+                    val info = runInterruptible { StreamInfo.getInfo(ServiceList.YouTube, fullUrl) }
                     val bestAudio = selectBestOpusFirstStream(info.audioStreams)
                         ?: throw IllegalStateException("Không tìm thấy luồng âm thanh hỗ trợ cho video này")
 
@@ -483,18 +519,15 @@ class YouTubeMusicRepository(
                     )
                 }
             } catch (_: TimeoutCancellationException) {
-                logger.log("YOUTUBE", "WARN", "Hết thời gian lấy luồng âm thanh YouTube (quá 9 giây)")
-                Result.failure(IOException("Hết thời gian tải luồng YouTube Music (quá 9 giây)"))
+                logger.log("YOUTUBE", "WARN", "Hết thời gian lấy luồng âm thanh YouTube (quá 7.5 giây)")
+                Result.failure(IOException("Hết thời gian tải luồng YouTube Music"))
             } catch (_: SocketTimeoutException) {
                 logger.log("YOUTUBE", "WARN", "Timeout socket khi tải luồng YouTube")
-                Result.failure(IOException("Hết thời gian kết nối YouTube Music (quá 9 giây)"))
+                Result.failure(IOException("Hết thời gian kết nối YouTube Music"))
             } catch (err: Exception) {
+                if (err is kotlinx.coroutines.CancellationException) throw err
                 val rawMsg = err.message.orEmpty()
-                val friendly = if (
-                    rawMsg.contains("Sign in", ignoreCase = true) ||
-                    rawMsg.contains("confirm you're not a bot", ignoreCase = true) ||
-                    rawMsg.contains("login", ignoreCase = true)
-                ) {
+                val friendly = if (isLoginRequiredError(rawMsg)) {
                     IOException("YouTube yêu cầu đăng nhập. Vui lòng vào Cài đặt > Nguồn nhạc > Đăng nhập YouTube.")
                 } else err
                 logger.log("YOUTUBE", "ERROR", "Lỗi trích xuất luồng YouTube: ${err.message}")
@@ -502,12 +535,46 @@ class YouTubeMusicRepository(
             }
         }
 
+        if (!allowRetry) {
+            return@withContext attemptBlock()
+        }
+        executeWithSingleRetry(
+            shouldRetry = { err -> !isLoginRequiredError(err.message.orEmpty()) },
+            onRetryLog = {
+                logger.log("YOUTUBE", "WARN", "Trích xuất luồng YouTube chậm/lỗi, đang tự thử lại 1 lần...")
+            },
+            block = attemptBlock
+        )
+    }
+
+    private fun isLoginRequiredError(rawMsg: String): Boolean {
+        return rawMsg.contains("Sign in", ignoreCase = true) ||
+            rawMsg.contains("confirm you're not a bot", ignoreCase = true) ||
+            rawMsg.contains("login", ignoreCase = true) ||
+            rawMsg.contains("Vui lòng vào Cài đặt", ignoreCase = true)
+    }
+
+    private suspend fun <T> executeWithSingleRetry(
+        shouldRetry: (Throwable) -> Boolean = { true },
+        onRetryLog: () -> Unit,
+        block: suspend () -> Result<T>
+    ): Result<T> {
+        val first = block()
+        val firstErr = first.exceptionOrNull() ?: return first
+        if (!shouldRetry(firstErr)) return first
+        onRetryLog()
+        delay(250L)
+        return block()
+    }
+
     private fun extractVideoId(url: String): String {
         val match = Regex("[?&]v=([^&]+)").find(url)
         return match?.groupValues?.getOrNull(1) ?: url.substringAfterLast('/').substringBefore('?')
     }
 
     companion object {
+        const val STREAM_FETCH_TIMEOUT_MS = 7_500L
+        const val FEED_TIMEOUT_MS = 8_000L
         internal fun isOpusStreamCandidate(
             codec: String?,
             mimeType: String?,

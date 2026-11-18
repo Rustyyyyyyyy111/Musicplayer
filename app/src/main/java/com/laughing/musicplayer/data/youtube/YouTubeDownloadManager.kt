@@ -14,6 +14,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -54,7 +56,8 @@ class YouTubeDownloadManager(
             downloadSemaphore.withPermit {
                 trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, 0f, null)
                 val resolved = youTubeRepository.resolveAudioStreamUrl(
-                    track.youtubeVideoId ?: track.streamUri ?: return@withPermit
+                    videoUrlOrId = track.youtubeVideoId ?: track.streamUri ?: return@withPermit,
+                    allowRetry = true
                 ).getOrElse { err ->
                     markFailed(taskId, track, err.message ?: "Không lấy được luồng âm thanh")
                     return@withPermit
@@ -64,51 +67,15 @@ class YouTubeDownloadManager(
                 val targetName = storageManager.sanitizeFileName("${track.artist} - ${track.title}.$ext")
                 val tempFile = File.createTempFile("yt_dl_", ".$ext")
 
-                runCatching {
-                    val request = Request.Builder()
-                        .url(resolved.streamUrl)
-                        .header("User-Agent", YouTubeSessionCookieManager.DEFAULT_USER_AGENT)
-                        .build()
-                    proxyManager.getHttpClient().newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
-                    val body = resp.body ?: throw IllegalStateException("Empty body")
-                    val total = body.contentLength().takeIf { it > 0 } ?: 1L
-                    var downloaded = 0L
-                    val buffer = ByteArray(16 * 1024)
+                val downloadResult = runDownloadWithSingleRetry(
+                    taskId = taskId,
+                    track = track,
+                    streamUrl = resolved.streamUrl,
+                    targetName = targetName,
+                    tempFile = tempFile
+                )
 
-                    body.byteStream().use { input ->
-                        FileOutputStream(tempFile).use { out ->
-                            var read: Int
-                            var lastNotify = 0L
-                            while (input.read(buffer).also { read = it } != -1) {
-                                if (!isActive) throw kotlinx.coroutines.CancellationException()
-                                out.write(buffer, 0, read)
-                                downloaded += read
-                                val now = System.currentTimeMillis()
-                                if (now - lastNotify > 250L) {
-                                    lastNotify = now
-                                    val progress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
-                                    trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, progress, null)
-                                    downloadCacheDao.upsertDownload(
-                                        DownloadTaskEntity(
-                                            id = taskId,
-                                            trackId = track.id,
-                                            title = track.title,
-                                            artist = track.artist,
-                                            source = MusicSource.YOUTUBE_MUSIC.name,
-                                            status = DownloadStatus.DOWNLOADING.name,
-                                            bytesDownloaded = downloaded,
-                                            totalBytes = total,
-                                            destinationPath = "${storageManager.getDisplayRootPath()}$targetName",
-                                            errorMessage = null,
-                                            updatedAtEpochMs = now
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-
+                downloadResult.onSuccess { downloaded ->
                     val savedPath = storageManager.saveAudioToUnifiedStorage(
                         source = MusicSource.YOUTUBE_MUSIC,
                         fileName = targetName,
@@ -147,7 +114,6 @@ class YouTubeDownloadManager(
                     } else {
                         markFailed(taskId, track, "Không thể ghi vào /sdcard/Music/Musicplayer/")
                     }
-                }
                 }.onFailure { err ->
                     if (err !is kotlinx.coroutines.CancellationException) {
                         markFailed(taskId, track, err.message ?: "Lỗi tải về")
@@ -157,6 +123,84 @@ class YouTubeDownloadManager(
             }
         }
         activeJobs[taskId] = job
+    }
+
+    private suspend fun runDownloadWithSingleRetry(
+        taskId: String,
+        track: Track,
+        streamUrl: String,
+        targetName: String,
+        tempFile: File
+    ): Result<Long> {
+        val firstAttempt = executeStreamDownload(taskId, track, streamUrl, targetName, tempFile)
+        val firstErr = firstAttempt.exceptionOrNull() ?: return firstAttempt
+        if (firstErr is kotlinx.coroutines.CancellationException) return firstAttempt
+        logger.log("YT_DL", "WARN", "Luồng tải '${track.title}' bị gián đoạn, đang thử lại 1 lần...")
+        delay(250L)
+        return executeStreamDownload(taskId, track, streamUrl, targetName, tempFile)
+    }
+
+    private suspend fun executeStreamDownload(
+        taskId: String,
+        track: Track,
+        streamUrl: String,
+        targetName: String,
+        tempFile: File
+    ): Result<Long> = runCatching {
+        val job = currentCoroutineContext()[Job]
+        val request = Request.Builder()
+            .url(streamUrl)
+            .header("User-Agent", YouTubeSessionCookieManager.DEFAULT_USER_AGENT)
+            .build()
+        val call = proxyManager.getStreamHttpClient().newCall(request)
+        val registration = job?.invokeOnCompletion { call.cancel() }
+        try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+                val body = resp.body ?: throw IllegalStateException("Empty body")
+                val total = body.contentLength().takeIf { it > 0 } ?: 1L
+                var downloaded = 0L
+                val buffer = ByteArray(64 * 1024)
+
+                body.byteStream().use { input ->
+                    FileOutputStream(tempFile).use { out ->
+                        var read: Int
+                        var lastNotify = 0L
+                        while (input.read(buffer).also { read = it } != -1) {
+                            if (!currentCoroutineContext().isActive) {
+                                throw kotlinx.coroutines.CancellationException()
+                            }
+                            out.write(buffer, 0, read)
+                            downloaded += read
+                            val now = System.currentTimeMillis()
+                            if (now - lastNotify > 250L) {
+                                lastNotify = now
+                                val progress = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                                trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, progress, null)
+                                downloadCacheDao.upsertDownload(
+                                    DownloadTaskEntity(
+                                        id = taskId,
+                                        trackId = track.id,
+                                        title = track.title,
+                                        artist = track.artist,
+                                        source = MusicSource.YOUTUBE_MUSIC.name,
+                                        status = DownloadStatus.DOWNLOADING.name,
+                                        bytesDownloaded = downloaded,
+                                        totalBytes = total,
+                                        destinationPath = "${storageManager.getDisplayRootPath()}$targetName",
+                                        errorMessage = null,
+                                        updatedAtEpochMs = now
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                downloaded
+            }
+        } finally {
+            registration?.dispose()
+        }
     }
 
     fun cancelDownload(track: Track) {

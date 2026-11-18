@@ -7,8 +7,11 @@ import com.laughing.musicplayer.data.local.CacheEntryEntity
 import com.laughing.musicplayer.data.local.DownloadCacheDao
 import com.laughing.musicplayer.data.local.SettingsDataStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -85,49 +88,56 @@ class CacheManager(
         val tmpFile = File(streamCacheDir, "${targetFile.name}.part")
         val maxSingleEntryBytes = minOf(limitBytes / 4L, 120L * 1024L * 1024L)
 
+        val job = currentCoroutineContext()[Job]
         runCatching {
             val request = Request.Builder()
                 .url(streamUrl)
                 .header("User-Agent", "Mozilla/5.0")
                 .build()
-            httpClient.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                val body = resp.body ?: return@use null
-                val contentLen = body.contentLength()
-                if (contentLen > maxSingleEntryBytes) {
-                    return@use null
-                }
-                body.byteStream().use { input ->
-                    FileOutputStream(tmpFile).use { output ->
-                        val buffer = ByteArray(16 * 1024)
-                        var written = 0L
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read <= 0) break
-                            written += read
-                            if (written > maxSingleEntryBytes) {
-                                tmpFile.delete()
-                                return@use null
+            val call = httpClient.newCall(request)
+            val registration = job?.invokeOnCompletion { call.cancel() }
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body ?: return@use null
+                    val contentLen = body.contentLength()
+                    if (contentLen > maxSingleEntryBytes) {
+                        return@use null
+                    }
+                    body.byteStream().use { input ->
+                        FileOutputStream(tmpFile).use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            var written = 0L
+                            while (currentCoroutineContext().isActive) {
+                                val read = input.read(buffer)
+                                if (read <= 0) break
+                                written += read
+                                if (written > maxSingleEntryBytes) {
+                                    tmpFile.delete()
+                                    return@use null
+                                }
+                                output.write(buffer, 0, read)
                             }
-                            output.write(buffer, 0, read)
                         }
                     }
+                    if (currentCoroutineContext().isActive && tmpFile.exists() && tmpFile.length() > 16_384L) {
+                        if (targetFile.exists()) targetFile.delete()
+                        tmpFile.renameTo(targetFile)
+                        recordCacheAccess(
+                            key = key,
+                            trackId = track.id,
+                            file = targetFile,
+                            isPermanentOffline = false
+                        )
+                        logger.log("CACHE", "INFO", "Đã lưu đệm thông minh YouTube: ${track.title}")
+                        targetFile
+                    } else {
+                        tmpFile.delete()
+                        null
+                    }
                 }
-                if (tmpFile.exists() && tmpFile.length() > 16_384L) {
-                    if (targetFile.exists()) targetFile.delete()
-                    tmpFile.renameTo(targetFile)
-                    recordCacheAccess(
-                        key = key,
-                        trackId = track.id,
-                        file = targetFile,
-                        isPermanentOffline = false
-                    )
-                    logger.log("CACHE", "INFO", "Đã lưu đệm thông minh YouTube: ${track.title}")
-                    targetFile
-                } else {
-                    tmpFile.delete()
-                    null
-                }
+            } finally {
+                registration?.dispose()
             }
         }.onFailure {
             tmpFile.delete()

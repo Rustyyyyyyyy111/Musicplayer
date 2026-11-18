@@ -16,11 +16,13 @@ import com.laughing.musicplayer.data.local.DownloadCacheDao
 import com.laughing.musicplayer.data.local.DownloadTaskEntity
 import com.laughing.musicplayer.data.local.TrackDao
 import com.laughing.musicplayer.data.storage.UnifiedStorageManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
 import java.io.File
@@ -78,57 +80,11 @@ class TelegramMusicRepository(
         activeDownloadJobs[taskId]?.cancel()
 
         val job = scope.launch {
-            trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, 0f, null)
-            val targetFileName = track.fileName.ifBlank { "${track.title}.${track.format.extension}" }
-            downloadCacheDao.upsertDownload(
-                DownloadTaskEntity(
-                    id = taskId,
-                    trackId = track.id,
-                    title = track.title,
-                    artist = track.artist,
-                    source = MusicSource.TELEGRAM.name,
-                    status = DownloadStatus.DOWNLOADING.name,
-                    bytesDownloaded = 0L,
-                    totalBytes = track.fileSizeBytes,
-                    destinationPath = "${storageManager.getDisplayRootPath()}$targetFileName",
-                    errorMessage = null,
-                    updatedAtEpochMs = System.currentTimeMillis()
-                )
-            )
-
-            val resolved = fileResolver.resolveAndStartDownload(
-                target = TelegramFileTarget(
-                    trackId = track.id,
-                    fileId = track.telegramFileId ?: 0,
-                    remoteFileId = track.telegramRemoteFileId,
-                    chatId = track.telegramChatId,
-                    messageId = track.telegramMessageId,
-                    expectedSize = track.fileSizeBytes,
-                    isVoiceMessage = track.isVoiceMessage,
-                    format = track.format
-                ),
-                priority = 16,
-                offset = 0L,
-                limit = 0L
-            ).getOrElse { err ->
-                markFailed(taskId, track, err.message ?: "Lỗi bắt đầu tải Telegram")
-                return@launch
-            }
-            val activeFileId = resolved.fileId
-
-            var stallCounter = 0
-            var lastBytes = 0L
-            while (true) {
-                val tdFile = core.sendQuery(TdApi.GetFile(activeFileId)).getOrNull()
-                if (tdFile == null) {
-                    delay(400L)
-                    continue
-                }
-                val total = tdFile.size.takeIf { it > 0 } ?: tdFile.expectedSize.coerceAtLeast(track.fileSizeBytes)
-                val downloaded = tdFile.local.downloadedSize
-                val progress = if (total > 0) (downloaded.toFloat() / total).coerceIn(0f, 1f) else 0f
-
-                trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, progress, null)
+            var activeFileId = 0
+            var completed = false
+            try {
+                trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, 0f, null)
+                val targetFileName = track.fileName.ifBlank { "${track.title}.${track.format.extension}" }
                 downloadCacheDao.upsertDownload(
                     DownloadTaskEntity(
                         id = taskId,
@@ -137,88 +93,166 @@ class TelegramMusicRepository(
                         artist = track.artist,
                         source = MusicSource.TELEGRAM.name,
                         status = DownloadStatus.DOWNLOADING.name,
-                        bytesDownloaded = downloaded,
-                        totalBytes = total,
+                        bytesDownloaded = 0L,
+                        totalBytes = track.fileSizeBytes,
                         destinationPath = "${storageManager.getDisplayRootPath()}$targetFileName",
                         errorMessage = null,
                         updatedAtEpochMs = System.currentTimeMillis()
                     )
                 )
 
-                if (tdFile.local.isDownloadingCompleted && tdFile.local.path.isNotBlank()) {
-                    val srcFile = File(tdFile.local.path)
-                    if (!storageManager.isValidAudioFile(srcFile, total)) {
-                        delay(250L)
+                val resolved = fileResolver.resolveAndStartDownload(
+                    target = TelegramFileTarget(
+                        trackId = track.id,
+                        fileId = track.telegramFileId ?: 0,
+                        remoteFileId = track.telegramRemoteFileId,
+                        chatId = track.telegramChatId,
+                        messageId = track.telegramMessageId,
+                        expectedSize = track.fileSizeBytes,
+                        isVoiceMessage = track.isVoiceMessage,
+                        format = track.format
+                    ),
+                    priority = 16,
+                    offset = 0L,
+                    limit = 0L
+                ).getOrElse { err ->
+                    markFailed(taskId, track, err.message ?: "Lỗi bắt đầu tải Telegram")
+                    return@launch
+                }
+                activeFileId = resolved.fileId
+
+                var lastBytes = -1L
+                var lastProgressAtMs = System.currentTimeMillis()
+                var retriedStall = false
+                val maxStallMs = 7_500L
+
+                while (isActive) {
+                    val tdFile = core.sendQuery(TdApi.GetFile(activeFileId), timeoutMs = 4_500L).getOrNull()
+                    if (tdFile == null) {
+                        val elapsed = System.currentTimeMillis() - lastProgressAtMs
+                        if (elapsed >= maxStallMs) {
+                            markFailed(taskId, track, "Mất kết nối máy chủ Telegram (quá 7.5 giây)")
+                            break
+                        }
+                        if (!retriedStall && elapsed >= 3_500L) {
+                            retriedStall = true
+                            logger.log("DOWNLOAD", "WARN", "Tải '${track.title}' mất phản hồi, đang tự thử lại 1 lần...")
+                            core.sendQuery(TdApi.DownloadFile(activeFileId, 16, 0L, 0L, false), timeoutMs = 4_500L)
+                        }
+                        delay(350L)
                         continue
                     }
-                    val mime = "audio/${track.format.extension}"
-                    val probed = AudioFormatDetector.probeAudioSpecs(srcFile, track.format)
-                    val embeddedArtPath = probed.embeddedArtwork?.let { bytes ->
-                        storageManager.saveArtworkFile(track.id, bytes)
-                    }
-                    val savedPath = storageManager.saveAudioToUnifiedStorage(
-                        source = MusicSource.TELEGRAM,
-                        fileName = targetFileName,
-                        mimeType = mime
-                    ) { srcFile.inputStream() }
 
-                    if (savedPath != null) {
-                        val remoteId = tdFile.remote?.id?.takeIf { it.isNotBlank() } ?: resolved.remoteFileId
-                        val uniqueId = tdFile.remote?.uniqueId?.takeIf { it.isNotBlank() } ?: resolved.remoteUniqueId
-                        trackDao.updateVerifiedLocalAudio(
+                    val total = tdFile.size.takeIf { it > 0 } ?: tdFile.expectedSize.coerceAtLeast(track.fileSizeBytes)
+                    val downloaded = tdFile.local.downloadedSize
+                    val progress = if (total > 0) (downloaded.toFloat() / total).coerceIn(0f, 1f) else 0f
+
+                    trackDao.updateDownloadState(track.id, DownloadStatus.DOWNLOADING.name, progress, null)
+                    downloadCacheDao.upsertDownload(
+                        DownloadTaskEntity(
+                            id = taskId,
                             trackId = track.id,
-                            localPath = savedPath,
-                            status = DownloadStatus.COMPLETED.name,
-                            progress = 1f,
-                            verifiedAtMs = System.currentTimeMillis(),
-                            fileId = tdFile.id,
-                            remoteFileId = remoteId,
-                            remoteUniqueId = uniqueId
+                            title = track.title,
+                            artist = track.artist,
+                            source = MusicSource.TELEGRAM.name,
+                            status = DownloadStatus.DOWNLOADING.name,
+                            bytesDownloaded = downloaded,
+                            totalBytes = total,
+                            destinationPath = "${storageManager.getDisplayRootPath()}$targetFileName",
+                            errorMessage = null,
+                            updatedAtEpochMs = System.currentTimeMillis()
                         )
-                        trackDao.updateTrackMetadata(
-                            trackId = track.id,
-                            artworkUri = embeddedArtPath,
-                            bitrateKbps = probed.bitrateKbps,
-                            sampleRateHz = probed.sampleRateHz,
-                            bitDepth = probed.bitDepth,
-                            durationMs = probed.durationMs
-                        )
-                        downloadCacheDao.upsertDownload(
-                            DownloadTaskEntity(
-                                id = taskId,
+                    )
+
+                    if (tdFile.local.isDownloadingCompleted && tdFile.local.path.isNotBlank()) {
+                        val srcFile = File(tdFile.local.path)
+                        if (!storageManager.isValidAudioFile(srcFile, total)) {
+                            if (System.currentTimeMillis() - lastProgressAtMs >= maxStallMs) {
+                                markFailed(taskId, track, "Tệp Telegram tải về bị lỗi hoặc không đầy đủ")
+                                break
+                            }
+                            delay(250L)
+                            continue
+                        }
+                        val mime = "audio/${track.format.extension}"
+                        val probed = AudioFormatDetector.probeAudioSpecs(srcFile, track.format)
+                        val embeddedArtPath = probed.embeddedArtwork?.let { bytes ->
+                            storageManager.saveArtworkFile(track.id, bytes)
+                        }
+                        val savedPath = storageManager.saveAudioToUnifiedStorage(
+                            source = MusicSource.TELEGRAM,
+                            fileName = targetFileName,
+                            mimeType = mime
+                        ) { srcFile.inputStream() }
+
+                        if (savedPath != null) {
+                            val remoteId = tdFile.remote?.id?.takeIf { it.isNotBlank() } ?: resolved.remoteFileId
+                            val uniqueId = tdFile.remote?.uniqueId?.takeIf { it.isNotBlank() } ?: resolved.remoteUniqueId
+                            trackDao.updateVerifiedLocalAudio(
                                 trackId = track.id,
-                                title = track.title,
-                                artist = track.artist,
-                                source = MusicSource.TELEGRAM.name,
+                                localPath = savedPath,
                                 status = DownloadStatus.COMPLETED.name,
-                                bytesDownloaded = total,
-                                totalBytes = total,
-                                destinationPath = savedPath,
-                                errorMessage = null,
-                                updatedAtEpochMs = System.currentTimeMillis()
+                                progress = 1f,
+                                verifiedAtMs = System.currentTimeMillis(),
+                                fileId = tdFile.id,
+                                remoteFileId = remoteId,
+                                remoteUniqueId = uniqueId
                             )
-                        )
-                        logger.log("DOWNLOAD", "INFO", "Tải về thành công: ${track.title}")
-                    } else {
-                        markFailed(taskId, track, "Không thể ghi tệp vào thư mục /sdcard/Music/Musicplayer/")
+                            trackDao.updateTrackMetadata(
+                                trackId = track.id,
+                                artworkUri = embeddedArtPath,
+                                bitrateKbps = probed.bitrateKbps,
+                                sampleRateHz = probed.sampleRateHz,
+                                bitDepth = probed.bitDepth,
+                                durationMs = probed.durationMs
+                            )
+                            downloadCacheDao.upsertDownload(
+                                DownloadTaskEntity(
+                                    id = taskId,
+                                    trackId = track.id,
+                                    title = track.title,
+                                    artist = track.artist,
+                                    source = MusicSource.TELEGRAM.name,
+                                    status = DownloadStatus.COMPLETED.name,
+                                    bytesDownloaded = total,
+                                    totalBytes = total,
+                                    destinationPath = savedPath,
+                                    errorMessage = null,
+                                    updatedAtEpochMs = System.currentTimeMillis()
+                                )
+                            )
+                            completed = true
+                            logger.log("DOWNLOAD", "INFO", "Tải về thành công: ${track.title}")
+                        } else {
+                            markFailed(taskId, track, "Không thể ghi tệp vào thư mục /sdcard/Music/Musicplayer/")
+                        }
+                        break
                     }
-                    break
-                }
 
-                if (downloaded == lastBytes) {
-                    stallCounter++
-                    // MelodyRide v1.2.18 auto-recovery for stalled downloads
-                    if (stallCounter >= 25) {
-                        logger.log("DOWNLOAD", "WARN", "Tải '${track.title}' bị đứng, đang tự khôi phục...")
-                        core.sendQuery(TdApi.CancelDownloadFile(activeFileId, false))
-                        core.sendQuery(TdApi.DownloadFile(activeFileId, 16, 0L, 0L, false))
-                        stallCounter = 0
+                    if (downloaded > lastBytes) {
+                        lastBytes = downloaded
+                        lastProgressAtMs = System.currentTimeMillis()
+                        retriedStall = false
+                    } else {
+                        val stallMs = System.currentTimeMillis() - lastProgressAtMs
+                        if (stallMs >= maxStallMs) {
+                            markFailed(taskId, track, "Hết thời gian tải '${track.title}' (luồng Telegram bị treo)")
+                            break
+                        } else if (!retriedStall && stallMs >= 3_500L) {
+                            retriedStall = true
+                            logger.log("DOWNLOAD", "WARN", "Tải '${track.title}' bị đứng, đang tự khôi phục 1 lần...")
+                            core.sendQuery(TdApi.CancelDownloadFile(activeFileId, false), timeoutMs = 3_000L)
+                            core.sendQuery(TdApi.DownloadFile(activeFileId, 16, 0L, 0L, false), timeoutMs = 4_500L)
+                        }
                     }
-                } else {
-                    lastBytes = downloaded
-                    stallCounter = 0
+                    delay(350L)
                 }
-                delay(350L)
+            } catch (_: CancellationException) {
+                if (activeFileId > 0 && !completed) {
+                    core.cancelDownloadAsync(activeFileId, onlyIfPending = false)
+                }
+            } finally {
+                activeDownloadJobs.remove(taskId)
             }
         }
         activeDownloadJobs[taskId] = job

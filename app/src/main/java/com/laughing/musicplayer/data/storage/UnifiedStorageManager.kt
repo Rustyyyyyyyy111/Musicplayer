@@ -105,7 +105,7 @@ class UnifiedStorageManager(
                 if (!targetDir.exists() || !targetDir.canWrite()) return@runCatching null
                 val outFile = File(targetDir, safeFileName)
                 FileOutputStream(outFile).use { out ->
-                    inputProvider().use { input -> input.copyTo(out) }
+                    inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
                 }
                 MediaScannerConnection.scanFile(
                     context,
@@ -136,7 +136,7 @@ class UnifiedStorageManager(
                 val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
                     ?: return@runCatching null
                 resolver.openOutputStream(uri)?.use { out ->
-                    inputProvider().use { input -> input.copyTo(out) }
+                    inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
                 }
                 val doneValues = ContentValues().apply {
                     put(MediaStore.Audio.Media.IS_PENDING, 0)
@@ -158,7 +158,7 @@ class UnifiedStorageManager(
                 val target = rootDoc?.createFile(mimeType, safeFileName)
                 if (target != null) {
                     context.contentResolver.openOutputStream(target.uri)?.use { out ->
-                        inputProvider().use { input -> input.copyTo(out) }
+                        inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
                     }
                     logger.log("STORAGE", "INFO", "Đã lưu qua SAF: $safeFileName")
                     target.uri.toString()
@@ -176,7 +176,7 @@ class UnifiedStorageManager(
         runCatching {
             val outFile = File(getAppManagedDir(subdir), safeFileName)
             FileOutputStream(outFile).use { out ->
-                inputProvider().use { input -> input.copyTo(out) }
+                inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
             }
             logger.log("STORAGE", "INFO", "Đã lưu tệp: ${outFile.absolutePath}")
             outFile.absolutePath
@@ -233,12 +233,6 @@ class UnifiedStorageManager(
         }
     }
 
-    fun getPersistentPublicAudioCacheDir(): File {
-        return File(File(context.filesDir, "music_cache"), "public_telegram").apply {
-            if (!exists()) mkdirs()
-        }
-    }
-
     fun isValidAudioFile(file: File?, expectedSizeBytes: Long = 0L): Boolean {
         if (file == null || !file.exists() || !file.isFile || !file.canRead()) return false
         val len = file.length()
@@ -266,7 +260,7 @@ class UnifiedStorageManager(
         runCatching {
             sourceFile.inputStream().use { input ->
                 FileOutputStream(partFile).use { output ->
-                    input.copyTo(output)
+                    input.copyTo(output, 64 * 1024)
                     output.fd.sync()
                 }
             }

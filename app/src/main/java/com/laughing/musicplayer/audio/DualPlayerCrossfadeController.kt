@@ -17,23 +17,23 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.TransferListener
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.laughing.musicplayer.core.model.AudioFormat
 import com.laughing.musicplayer.core.model.EqState
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.RepeatMode
 import com.laughing.musicplayer.core.model.SleepTimerMode
-import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.ReplayGainExtractor
 import com.laughing.musicplayer.data.local.SettingsDataStore
 import com.laughing.musicplayer.data.local.TrackDao
 import com.laughing.musicplayer.data.storage.CacheManager
-import com.laughing.musicplayer.data.telegram.PublicTelegramRepository
 import com.laughing.musicplayer.data.telegram.TelegramAudioDataSource
 import com.laughing.musicplayer.data.telegram.TelegramCore
 import com.laughing.musicplayer.data.telegram.TelegramFileResolver
@@ -87,12 +87,10 @@ class DualPlayerCrossfadeController(
     private val settingsDataStore: SettingsDataStore,
     private val playlistManager: PlaylistAndSmartMixManager,
     private val proxyManager: NetworkProxyManager,
-    private val logger: ActivityLogger,
-    private val publicTelegramRepository: PublicTelegramRepository? = null
+    private val logger: ActivityLogger
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val streamRequestHeaders = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
 
     val eqProcessor = BiquadEqAudioProcessor()
 
@@ -120,22 +118,15 @@ class DualPlayerCrossfadeController(
                         dataSpec.uri.scheme == "tg" -> tgFactory.createDataSource()
                         dataSpec.uri.scheme == "http" || dataSpec.uri.scheme == "https" -> {
                             val ytCookie = proxyManager.getYouTubeCookieHeader(uriStr)
-                            val customHeaders = streamRequestHeaders[uriStr]
-                            if (!ytCookie.isNullOrBlank() || !customHeaders.isNullOrEmpty()) {
-                                val mergedProps = buildMap {
-                                    if (!customHeaders.isNullOrEmpty()) putAll(customHeaders)
-                                    if (!ytCookie.isNullOrBlank()) put("Cookie", ytCookie)
-                                }
-                                DefaultHttpDataSource.Factory()
-                                    .setUserAgent(YouTubeSessionCookieManager.DEFAULT_USER_AGENT)
-                                    .setAllowCrossProtocolRedirects(true)
-                                    .setConnectTimeoutMs(10_000)
-                                    .setReadTimeoutMs(12_000)
-                                    .setDefaultRequestProperties(mergedProps)
-                                    .createDataSource()
-                            } else {
-                                defaultFactory.createDataSource()
+                            val httpFactory = DefaultHttpDataSource.Factory()
+                                .setUserAgent(YouTubeSessionCookieManager.DEFAULT_USER_AGENT)
+                                .setAllowCrossProtocolRedirects(true)
+                                .setConnectTimeoutMs(HTTP_CONNECT_TIMEOUT_MS)
+                                .setReadTimeoutMs(HTTP_READ_TIMEOUT_MS)
+                            if (!ytCookie.isNullOrBlank()) {
+                                httpFactory.setDefaultRequestProperties(mapOf("Cookie" to ytCookie))
                             }
+                            httpFactory.createDataSource()
                         }
                         else -> defaultFactory.createDataSource()
                     }
@@ -180,7 +171,8 @@ class DualPlayerCrossfadeController(
     private var sleepTimerJob: Job? = null
     private var activePlayJob: Job? = null
     private var bufferingWatchdogJob: Job? = null
-    private var retriedTrackId: String? = null
+    private var cacheYouTubeJob: Job? = null
+    private var activeLoadAttempt = 0
 
     init {
         attachListeners(playerA, isSlotA = true)
@@ -207,8 +199,19 @@ class DualPlayerCrossfadeController(
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 12_000,
+                /* maxBufferMs = */ 30_000,
+                /* bufferForPlaybackMs = */ 600,
+                /* bufferForPlaybackAfterRebufferMs = */ 1_200
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
         return ExoPlayer.Builder(context, renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(routingDataSourceFactory))
+            .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .build()
@@ -292,22 +295,62 @@ class DualPlayerCrossfadeController(
         _playbackState.value = state.copy(queue = mutable)
     }
 
+    fun clearErrorMessage() {
+        _playbackState.value = _playbackState.value.copy(errorMessage = null)
+    }
+
+    fun cancelActivePlaybackLoad() {
+        activePlayJob?.cancel()
+        activePlayJob = null
+        bufferingWatchdogJob?.cancel()
+        bufferingWatchdogJob = null
+        cacheYouTubeJob?.cancel()
+        cacheYouTubeJob = null
+        activeLoadAttempt = 0
+        runCatching {
+            activePlayer.stop()
+            activePlayer.clearMediaItems()
+        }
+        _playbackState.value = _playbackState.value.copy(
+            isBuffering = false,
+            isPlaying = false,
+            errorMessage = null
+        )
+        logger.log("PLAYER", "INFO", "Đã hủy tải luồng phát theo yêu cầu người dùng")
+    }
+
     fun togglePlayPause() {
+        val state = _playbackState.value
+        if (state.isBuffering) {
+            cancelActivePlaybackLoad()
+            return
+        }
         val p = activePlayer
-        if (p.mediaItemCount == 0 && _playbackState.value.currentTrack != null) {
+        if (p.isPlaying) {
+            p.pause()
+            _playbackState.value = _playbackState.value.copy(isPlaying = false)
+            return
+        }
+        val needsReload = p.mediaItemCount == 0 ||
+            p.playbackState == Player.STATE_IDLE ||
+            p.playerError != null
+        if (needsReload) {
+            val targetTrack = state.currentTrack
+                ?: state.queue.getOrNull(state.currentIndex.coerceIn(0, (state.queue.size - 1).coerceAtLeast(0)))
+                ?: return
             playTrackInternal(
-                _playbackState.value.currentTrack!!,
+                track = targetTrack,
                 resetStandby = true,
-                seekToMs = _playbackState.value.positionMs
+                seekToMs = state.positionMs,
+                attempt = 0
             )
             return
         }
-        if (p.isPlaying) {
-            p.pause()
-        } else {
-            onEnsureMediaSessionConnected?.invoke()
-            p.play()
+        if (p.playbackState == Player.STATE_ENDED) {
+            p.seekTo(0L)
         }
+        onEnsureMediaSessionConnected?.invoke()
+        p.play()
     }
 
     fun seekTo(positionMs: Long) {
@@ -471,17 +514,48 @@ class DualPlayerCrossfadeController(
         applyTrackDspSettings(_playbackState.value.currentTrack, eqState)
     }
 
-    private fun playTrackInternal(track: Track, resetStandby: Boolean, seekToMs: Long = 0L) {
+    private fun failPlayback(message: String) {
+        activePlayJob?.cancel()
+        activePlayJob = null
+        bufferingWatchdogJob?.cancel()
+        bufferingWatchdogJob = null
+        cacheYouTubeJob?.cancel()
+        cacheYouTubeJob = null
+        activeLoadAttempt = 0
+        runCatching {
+            activePlayer.stop()
+            activePlayer.clearMediaItems()
+        }
+        _playbackState.value = _playbackState.value.copy(
+            isBuffering = false,
+            isPlaying = false,
+            errorMessage = message
+        )
+    }
+
+    private fun playTrackInternal(
+        track: Track,
+        resetStandby: Boolean,
+        seekToMs: Long = 0L,
+        attempt: Int = 0
+    ) {
         activePlayJob?.cancel()
         bufferingWatchdogJob?.cancel()
+        cacheYouTubeJob?.cancel()
         isCrossfading = false
+        activeLoadAttempt = attempt
         if (resetStandby) {
             standbyPlayer.stop()
             standbyPlayer.clearMediaItems()
         }
+        runCatching {
+            activePlayer.stop()
+            activePlayer.clearMediaItems()
+        }
         _playbackState.value = _playbackState.value.copy(
             currentTrack = track,
             isBuffering = true,
+            isPlaying = false,
             errorMessage = null,
             crossfadeActive = false
         )
@@ -491,27 +565,24 @@ class DualPlayerCrossfadeController(
             applyTrackDspSettings(track, prefs.eqState)
             launchReplayGainProbeIfNeeded(track)
 
-            val resolveTimeoutMs = if (
-                track.source == MusicSource.TELEGRAM &&
-                track.telegramOrigin == TelegramOrigin.PERSONAL_TELEGRAM
-            ) 60_000L else 12_000L
-
             val resolvedResult = try {
-                withTimeout(resolveTimeoutMs) {
+                withTimeout(RESOLVE_TIMEOUT_MS) {
                     resolvePlayableMedia(track)
                 }
             } catch (_: TimeoutCancellationException) {
                 Result.failure(
-                    IllegalStateException("Hết thời gian tải '${track.title}' (quá ${resolveTimeoutMs / 1000} giây)")
+                    IllegalStateException("Hết thời gian tải '${track.title}' (quá 7.5 giây)")
                 )
             }
 
             val resolvedMedia = resolvedResult.getOrElse { err ->
-                _playbackState.value = _playbackState.value.copy(
-                    isBuffering = false,
-                    isPlaying = false,
-                    errorMessage = err.message ?: "Không thể tải '${track.title}'"
-                )
+                if (attempt == 0 && isRetryableTrack(track)) {
+                    logger.log("PLAYER", "WARN", "Kết nối '${track.title}' thất bại/chậm, đang tự thử lại 1 lần...")
+                    delay(250L)
+                    playTrackInternal(track, resetStandby = true, seekToMs = seekToMs, attempt = 1)
+                } else {
+                    failPlayback(err.message ?: "Không thể tải '${track.title}'")
+                }
                 return@launch
             }
 
@@ -534,6 +605,7 @@ class DualPlayerCrossfadeController(
             if (seekToMs > 0L) activePlayer.seekTo(seekToMs)
             activePlayer.prepare()
             activePlayer.play()
+            startBufferingWatchdogIfNeeded(resolvedTrack, seekToMs, attempt)
 
             launch(Dispatchers.IO) {
                 trackDao.markPlayed(resolvedTrack.id, System.currentTimeMillis())
@@ -541,9 +613,13 @@ class DualPlayerCrossfadeController(
             logger.log(
                 "PLAYER",
                 "INFO",
-                "Đang phát: ${track.title} — ${track.artist} [${track.format.extension}]"
+                "Đang phát: ${track.title} — ${track.artist} [${resolvedTrack.format.extension}]"
             )
         }
+    }
+
+    private fun isRetryableTrack(track: Track): Boolean {
+        return track.source == MusicSource.TELEGRAM || track.source == MusicSource.YOUTUBE_MUSIC
     }
 
     private fun launchReplayGainProbeIfNeeded(track: Track) {
@@ -589,9 +665,24 @@ class DualPlayerCrossfadeController(
     private data class ResolvedPlayableMedia(
         val uri: String,
         val updatedTrack: Track,
-        val mimeType: String? = null,
-        val httpHeaders: Map<String, String> = emptyMap()
+        val mimeType: String? = null
     )
+
+    private fun resolveMimeTypeForTrack(track: Track, rawMime: String?): String? {
+        val mime = rawMime.orEmpty().lowercase()
+        return when {
+            mime.contains("flac") || track.format == AudioFormat.FLAC -> MimeTypes.AUDIO_FLAC
+            mime.contains("mpeg") || mime.contains("mp3") || track.format == AudioFormat.MP3 -> MimeTypes.AUDIO_MPEG
+            mime.contains("webm") -> MimeTypes.AUDIO_WEBM
+            mime.contains("ogg") || mime.contains("opus") ||
+                track.format == AudioFormat.OGG || track.format == AudioFormat.OPUS -> MimeTypes.AUDIO_OGG
+            mime.contains("mp4") || mime.contains("m4a") ||
+                track.format == AudioFormat.M4A || track.format == AudioFormat.ALAC -> MimeTypes.AUDIO_MP4
+            mime.contains("aac") || track.format == AudioFormat.AAC -> MimeTypes.AUDIO_AAC
+            mime.contains("wav") || track.format == AudioFormat.WAV -> MimeTypes.AUDIO_WAV
+            else -> null
+        }
+    }
 
     private suspend fun resolvePlayableMedia(track: Track): Result<ResolvedPlayableMedia> {
         val candidateLocal = track.localPath
@@ -616,15 +707,18 @@ class DualPlayerCrossfadeController(
                 val cachedFormat = if (cached.extension.equals("opus", ignoreCase = true) ||
                     cached.extension.equals("webm", ignoreCase = true)
                 ) {
-                    com.laughing.musicplayer.core.model.AudioFormat.OPUS
+                    AudioFormat.OPUS
                 } else {
                     track.format
                 }
-                val cachedSampleRate = if (cachedFormat == com.laughing.musicplayer.core.model.AudioFormat.OPUS) 48000 else track.sampleRateHz
+                val cachedSampleRate = if (cachedFormat == AudioFormat.OPUS) 48000 else track.sampleRateHz
                 val updated = track.copy(format = cachedFormat, sampleRateHz = cachedSampleRate)
                 return Result.success(ResolvedPlayableMedia(Uri.fromFile(cached).toString(), updated))
             }
-            val resolved = youTubeRepository.resolveAudioStreamUrl(videoId).getOrElse { err ->
+            val resolved = youTubeRepository.resolveAudioStreamUrl(
+                videoUrlOrId = videoId,
+                allowRetry = false
+            ).getOrElse { err ->
                 return Result.failure(err)
             }
             val updatedTrack = track.copy(
@@ -635,7 +729,7 @@ class DualPlayerCrossfadeController(
                 artworkUri = track.artworkUri ?: resolved.artworkUrl,
                 fileName = "${track.title}.${resolved.format.extension}"
             )
-            scope.launch(Dispatchers.IO) {
+            cacheYouTubeJob = scope.launch(Dispatchers.IO) {
                 trackDao.updateTrackAudioSpecs(
                     trackId = updatedTrack.id,
                     format = updatedTrack.format.name,
@@ -652,49 +746,30 @@ class DualPlayerCrossfadeController(
                     httpClient = proxyManager.getStreamHttpClient()
                 )
             }
-            val containerMime = when {
-                resolved.mimeType.contains("webm", ignoreCase = true) -> MimeTypes.AUDIO_WEBM
-                resolved.mimeType.contains("ogg", ignoreCase = true) -> MimeTypes.AUDIO_OGG
-                resolved.mimeType.contains("mp4", ignoreCase = true) -> MimeTypes.AUDIO_MP4
-                else -> null
-            }
+            val containerMime = resolveMimeTypeForTrack(updatedTrack, resolved.mimeType)
             return Result.success(ResolvedPlayableMedia(resolved.streamUrl, updatedTrack, containerMime))
         }
         if (track.source == MusicSource.TELEGRAM) {
             val latestTrack = withContext(Dispatchers.IO) {
                 trackDao.getTrackById(track.id)?.toDomain() ?: track
             }
-            if (latestTrack.telegramOrigin == TelegramOrigin.PUBLIC_TELEGRAM) {
-                val repo = publicTelegramRepository
-                    ?: return Result.failure(IllegalStateException("Dịch vụ kênh Telegram công khai chưa sẵn sàng"))
-                val streamReq = repo.resolvePlayableRequest(latestTrack).getOrElse { err ->
-                    return Result.failure(err)
-                }
-                if (streamReq.headers.isNotEmpty()) {
-                    streamRequestHeaders[streamReq.url] = streamReq.headers
-                }
-                return Result.success(
-                    ResolvedPlayableMedia(
-                        uri = streamReq.url,
-                        updatedTrack = latestTrack,
-                        mimeType = streamReq.mimeType,
-                        httpHeaders = streamReq.headers
-                    )
-                )
-            }
-            val verifiedTrack = withContext(Dispatchers.IO) {
-                telegramFileResolver.ensureVerifiedLocalAudioFile(latestTrack)
+            val progressive = withContext(Dispatchers.IO) {
+                telegramFileResolver.resolveForProgressiveStream(latestTrack)
             }.getOrElse { err ->
                 return Result.failure(err)
             }
-            val verifiedPath = verifiedTrack.localPath
-                ?: return Result.failure(IllegalStateException("Không tìm thấy tệp Telegram đã xác minh cho '${track.title}'"))
-            val playableUri = if (verifiedPath.startsWith("content://") || verifiedPath.startsWith("file://")) {
-                verifiedPath
+            val containerMime = if (progressive.isLocalFile) {
+                null
             } else {
-                Uri.fromFile(File(verifiedPath)).toString()
+                resolveMimeTypeForTrack(progressive.track, progressive.mimeType)
             }
-            return Result.success(ResolvedPlayableMedia(playableUri, verifiedTrack))
+            return Result.success(
+                ResolvedPlayableMedia(
+                    uri = progressive.playUri,
+                    updatedTrack = progressive.track,
+                    mimeType = containerMime
+                )
+            )
         }
         val uri = track.streamUri
             ?: return Result.failure(IllegalStateException("Không tìm thấy luồng phát cho '${track.title}'"))
@@ -723,23 +798,27 @@ class DualPlayerCrossfadeController(
             .build()
     }
 
-    private fun startBufferingWatchdogIfNeeded() {
+    private fun startBufferingWatchdogIfNeeded(
+        track: Track? = _playbackState.value.currentTrack,
+        seekToMs: Long = _playbackState.value.positionMs,
+        attempt: Int = activeLoadAttempt
+    ) {
         bufferingWatchdogJob?.cancel()
-        val track = _playbackState.value.currentTrack ?: return
-        val isOnlineStream = track.localPath.isNullOrBlank() &&
-            (track.source == MusicSource.TELEGRAM || track.source == MusicSource.YOUTUBE_MUSIC)
+        val target = track ?: return
+        val isOnlineStream = target.localPath.isNullOrBlank() &&
+            (target.source == MusicSource.TELEGRAM || target.source == MusicSource.YOUTUBE_MUSIC)
         if (!isOnlineStream) return
         bufferingWatchdogJob = scope.launch {
-            delay(9_500L)
+            delay(BUFFERING_STALL_TIMEOUT_MS)
             val current = _playbackState.value
-            if (current.isBuffering && current.currentTrack?.id == track.id) {
-                activePlayer.stop()
-                _playbackState.value = current.copy(
-                    isBuffering = false,
-                    isPlaying = false,
-                    errorMessage = "Hết thời gian đệm '${track.title}' (quá 9 giây). Kiểm tra mạng rồi thử lại."
-                )
-                logger.log("PLAYER", "WARN", "Hết thời gian chờ đệm '${track.title}' (>9.5s)")
+            if (current.isBuffering && current.currentTrack?.id == target.id) {
+                if (attempt == 0) {
+                    logger.log("PLAYER", "WARN", "Đệm '${target.title}' bị treo (>7.5s), đang tự thử lại 1 lần...")
+                    playTrackInternal(target, resetStandby = true, seekToMs = seekToMs, attempt = 1)
+                } else {
+                    logger.log("PLAYER", "WARN", "Hết thời gian chờ đệm '${target.title}' sau khi thử lại")
+                    failPlayback("Hết thời gian đệm '${target.title}'. Vui lòng kiểm tra mạng rồi thử lại.")
+                }
             }
         }
     }
@@ -755,12 +834,17 @@ class DualPlayerCrossfadeController(
                 if (isSlotA != activeSlotA) return
                 when (playbackState) {
                     Player.STATE_BUFFERING -> {
+                        val curTrack = _playbackState.value.currentTrack
                         _playbackState.value = _playbackState.value.copy(isBuffering = true)
-                        startBufferingWatchdogIfNeeded()
+                        startBufferingWatchdogIfNeeded(
+                            track = curTrack,
+                            seekToMs = player.currentPosition.coerceAtLeast(0L),
+                            attempt = activeLoadAttempt
+                        )
                     }
                     Player.STATE_READY -> {
                         bufferingWatchdogJob?.cancel()
-                        retriedTrackId = null
+                        activeLoadAttempt = 0
                         val dur = player.duration.takeIf { it > 0 }
                             ?: _playbackState.value.currentTrack?.durationMs ?: 0L
                         _playbackState.value = _playbackState.value.copy(
@@ -775,7 +859,9 @@ class DualPlayerCrossfadeController(
                         }
                     }
                     Player.STATE_IDLE -> {
-                        bufferingWatchdogJob?.cancel()
+                        if (activePlayJob?.isActive != true) {
+                            bufferingWatchdogJob?.cancel()
+                        }
                     }
                     else -> Unit
                 }
@@ -786,15 +872,12 @@ class DualPlayerCrossfadeController(
                 bufferingWatchdogJob?.cancel()
                 val track = _playbackState.value.currentTrack
                 logger.log("DECODER", "ERROR", "Lỗi phát '${track?.title}': ${error.errorCodeName}")
-                if (track != null && track.source == MusicSource.YOUTUBE_MUSIC && retriedTrackId != track.id) {
-                    retriedTrackId = track.id
-                    val resumePos = player.currentPosition
-                    playTrackInternal(track, resetStandby = true, seekToMs = resumePos)
+                if (track != null && isRetryableTrack(track) && activeLoadAttempt == 0) {
+                    val resumePos = player.currentPosition.coerceAtLeast(0L)
+                    playTrackInternal(track, resetStandby = true, seekToMs = resumePos, attempt = 1)
                 } else {
-                    _playbackState.value = _playbackState.value.copy(
-                        isBuffering = false,
-                        isPlaying = false,
-                        errorMessage = error.cause?.message
+                    failPlayback(
+                        error.cause?.message
                             ?: "Không thể phát '${track?.title ?: "bài hát"}': ${error.errorCodeName}"
                     )
                 }
@@ -860,7 +943,7 @@ class DualPlayerCrossfadeController(
 
         scope.launch {
             val resolvedNext = try {
-                withTimeout(15_000L) { resolvePlayableMedia(nextTrack).getOrNull() }
+                withTimeout(RESOLVE_TIMEOUT_MS) { resolvePlayableMedia(nextTrack).getOrNull() }
             } catch (_: TimeoutCancellationException) {
                 null
             }
@@ -935,10 +1018,18 @@ class DualPlayerCrossfadeController(
     fun release() {
         activePlayJob?.cancel()
         bufferingWatchdogJob?.cancel()
+        cacheYouTubeJob?.cancel()
         tickerJob?.cancel()
         sleepTimerJob?.cancel()
         mainHandler.removeCallbacksAndMessages(null)
         playerA.release()
         playerB.release()
+    }
+
+    companion object {
+        const val HTTP_CONNECT_TIMEOUT_MS = 6_000
+        const val HTTP_READ_TIMEOUT_MS = 8_000
+        const val RESOLVE_TIMEOUT_MS = 7_500L
+        const val BUFFERING_STALL_TIMEOUT_MS = 7_500L
     }
 }

@@ -54,18 +54,18 @@ class NetworkProxyManager(
 
     fun buildClient(config: ProxyConfig): OkHttpClient = buildConfiguredClient(
         config = config,
-        connectTimeoutSec = 10,
-        readTimeoutSec = 15,
-        writeTimeoutSec = 15,
-        callTimeoutSec = 20
+        connectTimeoutSec = 6,
+        readTimeoutSec = 8,
+        writeTimeoutSec = 8,
+        callTimeoutSec = 8
     )
 
     fun buildStreamClient(config: ProxyConfig): OkHttpClient = buildConfiguredClient(
         config = config,
-        connectTimeoutSec = 8,
-        readTimeoutSec = 9,
-        writeTimeoutSec = 9,
-        callTimeoutSec = 10
+        connectTimeoutSec = 6,
+        readTimeoutSec = 8,
+        writeTimeoutSec = 8,
+        callTimeoutSec = 0
     )
 
     private fun buildConfiguredClient(

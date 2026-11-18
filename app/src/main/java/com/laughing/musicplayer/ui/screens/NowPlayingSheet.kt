@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -482,8 +483,13 @@ fun NowPlayingSheet(
                         color = Color.White
                     ) {
                         Box(contentAlignment = Alignment.Center) {
+                            val playButtonState = when {
+                                playback.isBuffering -> 0
+                                playback.isPlaying -> 1
+                                else -> 2
+                            }
                             AnimatedContent(
-                                targetState = playback.isPlaying,
+                                targetState = playButtonState,
                                 transitionSpec = {
                                     if (reducedMotion) {
                                         EnterTransition.None togetherWith ExitTransition.None
@@ -493,13 +499,28 @@ fun NowPlayingSheet(
                                     }
                                 },
                                 label = "now_playing_play_pause_icon"
-                            ) { playing ->
-                                Icon(
-                                    imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                    contentDescription = if (playing) "Tạm dừng" else "Phát",
-                                    tint = Color.Black,
-                                    modifier = Modifier.size(40.dp)
-                                )
+                            ) { state ->
+                                when (state) {
+                                    0 -> CircularProgressIndicator(
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .testTag("now_playing_loading_spinner"),
+                                        strokeWidth = 3.dp,
+                                        color = Color.Black
+                                    )
+                                    1 -> Icon(
+                                        imageVector = Icons.Filled.Pause,
+                                        contentDescription = "Tạm dừng",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(40.dp)
+                                    )
+                                    else -> Icon(
+                                        imageVector = Icons.Filled.PlayArrow,
+                                        contentDescription = "Phát",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(40.dp)
+                                    )
+                                }
                             }
                         }
                     }

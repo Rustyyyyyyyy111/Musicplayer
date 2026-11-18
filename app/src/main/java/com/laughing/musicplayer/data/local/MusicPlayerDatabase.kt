@@ -17,10 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PlaylistTrackCrossRef::class,
         DownloadTaskEntity::class,
         CacheEntryEntity::class,
-        ActivityLogEntity::class,
-        PublicChannelEntity::class
+        ActivityLogEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class MusicPlayerDatabase : RoomDatabase() {
@@ -29,7 +28,6 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun downloadCacheDao(): DownloadCacheDao
     abstract fun activityLogDao(): ActivityLogDao
-    abstract fun publicChannelDao(): PublicChannelDao
 
     companion object {
         @Volatile
@@ -113,6 +111,91 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DELETE FROM playlist_tracks WHERE trackId LIKE 'tgpub_%'")
+                db.execSQL("DELETE FROM download_tasks WHERE id LIKE 'dl_pub_%' OR trackId LIKE 'tgpub_%'")
+                db.execSQL("DELETE FROM tracks WHERE telegramOrigin = 'PUBLIC_TELEGRAM' OR id LIKE 'tgpub_%'")
+                db.execSQL("DROP TABLE IF EXISTS public_channels")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `tracks_v5` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `artist` TEXT NOT NULL,
+                        `album` TEXT NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `durationMs` INTEGER NOT NULL,
+                        `format` TEXT NOT NULL,
+                        `bitrateKbps` INTEGER NOT NULL,
+                        `sampleRateHz` INTEGER NOT NULL,
+                        `bitDepth` INTEGER,
+                        `fileSizeBytes` INTEGER NOT NULL,
+                        `fileHash` TEXT,
+                        `fileName` TEXT NOT NULL,
+                        `artworkUri` TEXT,
+                        `streamUri` TEXT,
+                        `localPath` TEXT,
+                        `telegramChatId` INTEGER,
+                        `telegramChatTitle` TEXT,
+                        `telegramMessageId` INTEGER,
+                        `telegramFileId` INTEGER,
+                        `telegramRemoteFileId` TEXT,
+                        `telegramRemoteUniqueId` TEXT,
+                        `mimeType` TEXT,
+                        `lastVerifiedAtEpochMs` INTEGER NOT NULL,
+                        `telegramThreadId` INTEGER,
+                        `telegramTopicName` TEXT,
+                        `youtubeVideoId` TEXT,
+                        `genre` TEXT NOT NULL,
+                        `genreManuallyEdited` INTEGER NOT NULL,
+                        `isVoiceMessage` INTEGER NOT NULL,
+                        `downloadStatus` TEXT NOT NULL,
+                        `downloadProgress` REAL NOT NULL,
+                        `isFavorite` INTEGER NOT NULL,
+                        `dateAddedEpochMs` INTEGER NOT NULL,
+                        `lastPlayedEpochMs` INTEGER NOT NULL,
+                        `playCount` INTEGER NOT NULL,
+                        `loudnessGainDb` REAL NOT NULL,
+                        `bpm` INTEGER NOT NULL,
+                        `normalizedSearchBlob` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO `tracks_v5` (
+                        id, title, artist, album, source, durationMs, format, bitrateKbps, sampleRateHz,
+                        bitDepth, fileSizeBytes, fileHash, fileName, artworkUri, streamUri, localPath,
+                        telegramChatId, telegramChatTitle, telegramMessageId, telegramFileId,
+                        telegramRemoteFileId, telegramRemoteUniqueId, mimeType, lastVerifiedAtEpochMs,
+                        telegramThreadId, telegramTopicName, youtubeVideoId, genre, genreManuallyEdited,
+                        isVoiceMessage, downloadStatus, downloadProgress, isFavorite, dateAddedEpochMs,
+                        lastPlayedEpochMs, playCount, loudnessGainDb, bpm, normalizedSearchBlob
+                    )
+                    SELECT
+                        id, title, artist, album, source, durationMs, format, bitrateKbps, sampleRateHz,
+                        bitDepth, fileSizeBytes, fileHash, fileName, artworkUri, streamUri, localPath,
+                        telegramChatId, telegramChatTitle, telegramMessageId, telegramFileId,
+                        telegramRemoteFileId, telegramRemoteUniqueId, mimeType, lastVerifiedAtEpochMs,
+                        telegramThreadId, telegramTopicName, youtubeVideoId, genre, genreManuallyEdited,
+                        isVoiceMessage, downloadStatus, downloadProgress, isFavorite, dateAddedEpochMs,
+                        lastPlayedEpochMs, playCount, loudnessGainDb, bpm, normalizedSearchBlob
+                    FROM `tracks`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `tracks`")
+                db.execSQL("ALTER TABLE `tracks_v5` RENAME TO `tracks`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_source` ON `tracks` (`source`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_telegramChatId_telegramThreadId` ON `tracks` (`telegramChatId`, `telegramThreadId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_tracks_telegramChatId_telegramMessageId` ON `tracks` (`telegramChatId`, `telegramMessageId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_fileHash` ON `tracks` (`fileHash`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_genre` ON `tracks` (`genre`)")
+            }
+        }
+
         fun getInstance(context: Context): MusicPlayerDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -120,7 +203,7 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
                     MusicPlayerDatabase::class.java,
                     "music_player.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }

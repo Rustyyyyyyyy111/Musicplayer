@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
@@ -52,6 +51,7 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VpnLock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -113,7 +113,6 @@ fun SettingsScreen(
     onOpenTelegramAuth: () -> Unit,
     onOpenYouTubeAuth: () -> Unit,
     onOpenSourcePicker: (TelegramChatType?) -> Unit,
-    onOpenPublicChannels: () -> Unit = {},
     onOpenYouTubeSearch: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenCarMode: () -> Unit,
@@ -255,14 +254,6 @@ fun SettingsScreen(
                             if (!isScanningTg) viewModel.scanSelectedTelegramSources()
                         },
                         testTag = "setting_tg_sync_now"
-                    )
-                    SettingsDivider()
-                    SettingsNavRow(
-                        icon = Icons.Filled.Public,
-                        title = "Kênh Telegram công khai",
-                        subtitle = "Không cần đăng nhập cá nhân • Backend / Bot API",
-                        onClick = onOpenPublicChannels,
-                        testTag = "setting_public_tg_channels"
                     )
                     SettingsDivider()
                     Row(
@@ -885,17 +876,28 @@ fun CarModeScreen(
                     modifier = Modifier
                         .size(104.dp)
                         .clip(CircleShape)
-                        .clickable { viewModel.togglePlayPause() },
+                        .clickable { viewModel.togglePlayPause() }
+                        .testTag("car_mode_play_pause"),
                     shape = CircleShape,
                     color = colors.accent
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = if (playback.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                            contentDescription = if (playback.isPlaying) "Tạm dừng" else "Phát",
-                            tint = Color.White,
-                            modifier = Modifier.size(54.dp)
-                        )
+                        if (playback.isBuffering) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .testTag("car_mode_loading_spinner"),
+                                strokeWidth = 4.dp,
+                                color = Color.White
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (playback.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                contentDescription = if (playback.isPlaying) "Tạm dừng" else "Phát",
+                                tint = Color.White,
+                                modifier = Modifier.size(54.dp)
+                            )
+                        }
                     }
                 }
                 Surface(

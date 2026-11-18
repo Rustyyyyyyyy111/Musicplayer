@@ -15,7 +15,6 @@ import com.laughing.musicplayer.core.model.EqPreset
 import com.laughing.musicplayer.core.model.EqState
 import com.laughing.musicplayer.core.model.ProxyConfig
 import com.laughing.musicplayer.core.model.ProxyType
-import com.laughing.musicplayer.core.model.PublicChannelAccessMode
 import com.laughing.musicplayer.core.model.RepeatMode
 import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.core.util.SecureCredentialStore
@@ -42,10 +41,7 @@ data class UserPreferences(
     val lastPositionMs: Long = 0L,
     val activeTelegramAccountId: Int = 0,
     val showLyricsOnLockScreen: Boolean = true,
-    val isYouTubeLoggedIn: Boolean = false,
-    val publicChannelSyncEnabled: Boolean = false,
-    val publicChannelAccessMode: PublicChannelAccessMode = PublicChannelAccessMode.BACKEND_API,
-    val publicBackendBaseUrl: String = ""
+    val isYouTubeLoggedIn: Boolean = false
 )
 
 class SettingsDataStore(
@@ -79,9 +75,6 @@ class SettingsDataStore(
         val ACTIVE_TG_ACCOUNT = intPreferencesKey("active_tg_account")
         val SHOW_LYRICS_LOCKSCREEN = booleanPreferencesKey("show_lyrics_lockscreen")
         val YT_LOGGED_IN = booleanPreferencesKey("yt_logged_in")
-        val PUBLIC_SYNC_ENABLED = booleanPreferencesKey("public_sync_enabled")
-        val PUBLIC_ACCESS_MODE = stringPreferencesKey("public_access_mode")
-        val PUBLIC_BACKEND_URL = stringPreferencesKey("public_backend_url")
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.musicPrefsDataStore.data.map { prefs ->
@@ -129,12 +122,7 @@ class SettingsDataStore(
             lastPositionMs = prefs[Keys.LAST_POSITION_MS] ?: 0L,
             activeTelegramAccountId = prefs[Keys.ACTIVE_TG_ACCOUNT] ?: 0,
             showLyricsOnLockScreen = prefs[Keys.SHOW_LYRICS_LOCKSCREEN] ?: true,
-            isYouTubeLoggedIn = prefs[Keys.YT_LOGGED_IN] ?: false,
-            publicChannelSyncEnabled = prefs[Keys.PUBLIC_SYNC_ENABLED] ?: false,
-            publicChannelAccessMode = prefs[Keys.PUBLIC_ACCESS_MODE]?.let {
-                runCatching { PublicChannelAccessMode.valueOf(it) }.getOrNull()
-            } ?: PublicChannelAccessMode.BACKEND_API,
-            publicBackendBaseUrl = prefs[Keys.PUBLIC_BACKEND_URL].orEmpty()
+            isYouTubeLoggedIn = prefs[Keys.YT_LOGGED_IN] ?: false
         )
     }
 
@@ -223,37 +211,4 @@ class SettingsDataStore(
     suspend fun setYouTubeLoggedIn(loggedIn: Boolean) {
         context.musicPrefsDataStore.edit { it[Keys.YT_LOGGED_IN] = loggedIn }
     }
-
-    suspend fun setPublicChannelSyncEnabled(enabled: Boolean) {
-        context.musicPrefsDataStore.edit { it[Keys.PUBLIC_SYNC_ENABLED] = enabled }
-    }
-
-    suspend fun setPublicChannelAccessMode(mode: PublicChannelAccessMode) {
-        context.musicPrefsDataStore.edit { it[Keys.PUBLIC_ACCESS_MODE] = mode.name }
-    }
-
-    suspend fun savePublicBackendConfig(baseUrl: String, bearerToken: String?) {
-        context.musicPrefsDataStore.edit {
-            it[Keys.PUBLIC_BACKEND_URL] = baseUrl.trim().trimEnd('/')
-        }
-        if (bearerToken != null) {
-            if (bearerToken.isBlank()) {
-                credentialStore.clearSecret("public_backend_token")
-            } else {
-                credentialStore.putSecret("public_backend_token", bearerToken.trim())
-            }
-        }
-    }
-
-    fun getPublicBackendToken(): String = credentialStore.getSecret("public_backend_token")
-
-    fun savePublicBotToken(token: String) {
-        if (token.isBlank()) {
-            credentialStore.clearSecret("public_bot_token")
-        } else {
-            credentialStore.putSecret("public_bot_token", token.trim())
-        }
-    }
-
-    fun getPublicBotToken(): String = credentialStore.getSecret("public_bot_token")
 }

@@ -85,7 +85,6 @@ import com.laughing.musicplayer.core.model.GenreType
 import com.laughing.musicplayer.core.model.LibraryCategory
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.SmartPlaylistType
-import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.laughing.musicplayer.ui.components.AppleCard
@@ -115,7 +114,6 @@ fun LibraryScreen(
     val context = LocalContext.current
     val colors = LocalMusicPlayerColors.current
     val selectedSource by viewModel.selectedLibrarySource.collectAsStateWithLifecycle()
-    val selectedTelegramOrigin by viewModel.selectedTelegramOrigin.collectAsStateWithLifecycle()
     val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
     val downloaded by viewModel.downloadedTracks.collectAsStateWithLifecycle()
@@ -207,13 +205,8 @@ fun LibraryScreen(
         }
     }
 
-    val sourceTracks = remember(allTracks, selectedSource, selectedTelegramOrigin) {
-        allTracks.filter { track ->
-            track.source == selectedSource &&
-                (selectedSource != MusicSource.TELEGRAM ||
-                    selectedTelegramOrigin == null ||
-                    track.telegramOrigin == selectedTelegramOrigin)
-        }
+    val sourceTracks = remember(allTracks, selectedSource) {
+        allTracks.filter { it.source == selectedSource }
     }
 
     val localSearchQuery = localSearchValue.text.trim()
@@ -379,53 +372,6 @@ fun LibraryScreen(
                             ),
                             modifier = Modifier.testTag("lib_cat_${cat.name.lowercase()}")
                         )
-                    }
-                }
-
-                if (selectedSource == MusicSource.TELEGRAM) {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.testTag("telegram_origin_filter_row")
-                    ) {
-                        item(key = "tg_origin_all") {
-                            FilterChip(
-                                selected = selectedTelegramOrigin == null,
-                                onClick = { viewModel.selectTelegramOrigin(null) },
-                                label = { Text("Tất cả") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = colors.accent.copy(alpha = 0.88f),
-                                    selectedLabelColor = Color.White,
-                                    labelColor = colors.textPrimary
-                                ),
-                                modifier = Modifier.testTag("tg_origin_all")
-                            )
-                        }
-                        item(key = "tg_origin_personal") {
-                            FilterChip(
-                                selected = selectedTelegramOrigin == TelegramOrigin.PERSONAL_TELEGRAM,
-                                onClick = { viewModel.selectTelegramOrigin(TelegramOrigin.PERSONAL_TELEGRAM) },
-                                label = { Text("Telegram cá nhân") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = colors.accent.copy(alpha = 0.88f),
-                                    selectedLabelColor = Color.White,
-                                    labelColor = colors.textPrimary
-                                ),
-                                modifier = Modifier.testTag("tg_origin_personal")
-                            )
-                        }
-                        item(key = "tg_origin_public") {
-                            FilterChip(
-                                selected = selectedTelegramOrigin == TelegramOrigin.PUBLIC_TELEGRAM,
-                                onClick = { viewModel.selectTelegramOrigin(TelegramOrigin.PUBLIC_TELEGRAM) },
-                                label = { Text("Kênh công khai") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = colors.accent.copy(alpha = 0.88f),
-                                    selectedLabelColor = Color.White,
-                                    labelColor = colors.textPrimary
-                                ),
-                                modifier = Modifier.testTag("tg_origin_public")
-                            )
-                        }
                     }
                 }
             }

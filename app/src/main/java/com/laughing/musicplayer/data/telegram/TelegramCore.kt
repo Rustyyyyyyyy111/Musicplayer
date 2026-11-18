@@ -199,7 +199,7 @@ class TelegramCore(
         return bytes
     }
 
-    suspend fun waitForReady(timeoutMs: Long = 7_500L): Boolean {
+    suspend fun waitForReady(timeoutMs: Long = 5_500L): Boolean {
         if (_authState.value is TdApi.AuthorizationStateReady) return true
         val start = System.currentTimeMillis()
         while (System.currentTimeMillis() - start < timeoutMs) {
@@ -234,9 +234,15 @@ class TelegramCore(
         }
     }
 
+    fun cancelDownloadAsync(fileId: Int, onlyIfPending: Boolean = false) {
+        if (fileId <= 0) return
+        val activeClient = client ?: return
+        activeClient.send(TdApi.CancelDownloadFile(fileId, onlyIfPending), null)
+    }
+
     suspend fun <T : TdApi.Object> sendQuery(
         function: TdApi.Function<T>,
-        timeoutMs: Long = 9_000L
+        timeoutMs: Long = 7_500L
     ): Result<T> {
         val activeClient = client ?: return Result.failure(
             IllegalStateException(_nativeError.value ?: "TDLib chưa sẵn sàng")

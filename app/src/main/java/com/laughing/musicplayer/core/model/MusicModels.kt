@@ -139,37 +139,6 @@ enum class LibraryCategory(val labelVi: String) {
     RECENT("Gần đây")
 }
 
-enum class TelegramOrigin(val labelVi: String) {
-    PERSONAL_TELEGRAM("Telegram cá nhân"),
-    PUBLIC_TELEGRAM("Kênh công khai")
-}
-
-enum class PublicChannelAccessMode(val labelVi: String) {
-    BACKEND_API("Companion Backend API"),
-    BOT_API("Telegram Bot API")
-}
-
-enum class PublicSyncStatus(val labelVi: String) {
-    IDLE("Sẵn sàng"),
-    SYNCING("Đang đồng bộ"),
-    PAUSED("Đã tạm dừng"),
-    ERROR("Lỗi")
-}
-
-data class PublicChannelItem(
-    val channelKey: String,
-    val channelId: Long? = null,
-    val username: String,
-    val displayTitle: String,
-    val avatarUrl: String? = null,
-    val discoveredCount: Int = 0,
-    val lastSyncedEpochMs: Long = 0L,
-    val syncStatus: PublicSyncStatus = PublicSyncStatus.IDLE,
-    val isPaused: Boolean = false,
-    val lastCursor: String? = null,
-    val lastError: String? = null
-)
-
 @Serializable
 data class Track(
     val id: String,
@@ -196,8 +165,6 @@ data class Track(
     val telegramRemoteUniqueId: String? = null,
     val mimeType: String? = null,
     val lastVerifiedAtEpochMs: Long = 0L,
-    val telegramOrigin: TelegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
-    val publicChannelUsername: String? = null,
     val telegramThreadId: Long? = null,
     val telegramTopicName: String? = null,
     val youtubeVideoId: String? = null,

@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -371,7 +372,8 @@ fun FloatingMiniPlayer(
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     modifier: Modifier = Modifier,
-    artworkModifier: Modifier = Modifier
+    artworkModifier: Modifier = Modifier,
+    isBuffering: Boolean = false
 ) {
     if (track == null) return
     val colors = LocalMusicPlayerColors.current
@@ -463,8 +465,13 @@ fun FloatingMiniPlayer(
                     onClick = onTogglePlayPause,
                     modifier = Modifier.size(48.dp).testTag("mini_play_pause")
                 ) {
+                    val btnState = when {
+                        isBuffering -> 0
+                        isPlaying -> 1
+                        else -> 2
+                    }
                     AnimatedContent(
-                        targetState = isPlaying,
+                        targetState = btnState,
                         transitionSpec = {
                             if (reducedMotion) {
                                 EnterTransition.None togetherWith ExitTransition.None
@@ -474,12 +481,26 @@ fun FloatingMiniPlayer(
                             }
                         },
                         label = "mini_play_pause_icon"
-                    ) { playing ->
-                        Icon(
-                            imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                            contentDescription = if (playing) "Tạm dừng" else "Phát",
-                            tint = colors.textPrimary
-                        )
+                    ) { state ->
+                        when (state) {
+                            0 -> CircularProgressIndicator(
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .testTag("mini_loading_spinner"),
+                                strokeWidth = 2.5.dp,
+                                color = colors.accent
+                            )
+                            1 -> Icon(
+                                imageVector = Icons.Filled.Pause,
+                                contentDescription = "Tạm dừng",
+                                tint = colors.textPrimary
+                            )
+                            else -> Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = "Phát",
+                                tint = colors.textPrimary
+                            )
+                        }
                     }
                 }
                 IconButton(

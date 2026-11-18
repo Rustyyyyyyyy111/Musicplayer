@@ -4,7 +4,6 @@ import com.laughing.musicplayer.core.model.AudioFormat
 import com.laughing.musicplayer.core.model.DownloadStatus
 import com.laughing.musicplayer.core.model.GenreType
 import com.laughing.musicplayer.core.model.MusicSource
-import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.AudioFormatDetector
@@ -414,7 +413,6 @@ class TelegramMessageScanner(
                     telegramRemoteUniqueId = remoteUniqueId,
                     mimeType = audio.mimeType?.takeIf { it.isNotBlank() },
                     lastVerifiedAtEpochMs = if (localAudioPath != null) nowMs else 0L,
-                    telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                     telegramThreadId = effectiveThreadId,
                     telegramTopicName = topicNameOverride,
                     genre = AutoGenreClassifier.classify(
@@ -504,7 +502,6 @@ class TelegramMessageScanner(
                     telegramRemoteUniqueId = docRemoteUniqueId,
                     mimeType = doc.mimeType?.takeIf { it.isNotBlank() },
                     lastVerifiedAtEpochMs = if (localDocPath != null) nowMs else 0L,
-                    telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                     telegramThreadId = effectiveThreadId,
                     telegramTopicName = topicNameOverride,
                     genre = AutoGenreClassifier.classify(
@@ -559,7 +556,6 @@ class TelegramMessageScanner(
                         telegramRemoteFileId = voiceRemoteFileId,
                         telegramRemoteUniqueId = voiceRemoteUniqueId,
                         mimeType = voice.mimeType?.takeIf { it.isNotBlank() },
-                        telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                         telegramThreadId = effectiveThreadId,
                         telegramTopicName = topicNameOverride,
                         isVoiceMessage = true,
@@ -642,7 +638,6 @@ class TelegramMessageScanner(
                     telegramRemoteUniqueId = track.telegramRemoteUniqueId ?: existing.telegramRemoteUniqueId,
                     mimeType = track.mimeType ?: existing.mimeType,
                     lastVerifiedAtEpochMs = maxOf(track.lastVerifiedAtEpochMs, existing.lastVerifiedAtEpochMs),
-                    telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                     downloadStatus = if (existing.downloadStatus == DownloadStatus.COMPLETED.name && existingLocalValid != null) {
                         DownloadStatus.COMPLETED
                     } else track.downloadStatus,
