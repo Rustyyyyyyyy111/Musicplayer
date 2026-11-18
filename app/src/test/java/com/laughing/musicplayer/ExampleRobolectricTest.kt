@@ -2,6 +2,7 @@ package com.laughing.musicplayer
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -10,7 +11,12 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.laughing.musicplayer.core.model.SleepTimerMode
 import com.laughing.musicplayer.core.model.SmartPlaylistType
@@ -569,5 +575,364 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("library_search_cancel").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("library_search_input").assertDoesNotExist()
+    }
+
+    @Test
+    fun telegramRoomMigrationDeduplicatesTracksAndCountsDistinctPerChatAndTopic() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val dbName = "migration_v2_v3_test.db"
+            context.deleteDatabase(dbName)
+
+            // 1. Seed a v2 SQLite database directly with duplicate (telegramChatId, telegramMessageId) rows
+            val helper = FrameworkSQLiteOpenHelperFactory().create(
+                SupportSQLiteOpenHelper.Configuration.builder(context)
+                    .name(dbName)
+                    .callback(object : SupportSQLiteOpenHelper.Callback(2) {
+                        override fun onCreate(db: SupportSQLiteDatabase) {
+                            db.execSQL(
+                                """
+                                CREATE TABLE IF NOT EXISTS `tracks` (
+                                    `id` TEXT NOT NULL,
+                                    `title` TEXT NOT NULL,
+                                    `artist` TEXT NOT NULL,
+                                    `album` TEXT NOT NULL,
+                                    `source` TEXT NOT NULL,
+                                    `durationMs` INTEGER NOT NULL,
+                                    `format` TEXT NOT NULL,
+                                    `bitrateKbps` INTEGER NOT NULL,
+                                    `sampleRateHz` INTEGER NOT NULL,
+                                    `bitDepth` INTEGER,
+                                    `fileSizeBytes` INTEGER NOT NULL,
+                                    `fileHash` TEXT,
+                                    `fileName` TEXT NOT NULL,
+                                    `artworkUri` TEXT,
+                                    `streamUri` TEXT,
+                                    `localPath` TEXT,
+                                    `telegramChatId` INTEGER,
+                                    `telegramChatTitle` TEXT,
+                                    `telegramMessageId` INTEGER,
+                                    `telegramFileId` INTEGER,
+                                    `telegramThreadId` INTEGER,
+                                    `telegramTopicName` TEXT,
+                                    `youtubeVideoId` TEXT,
+                                    `genre` TEXT NOT NULL,
+                                    `genreManuallyEdited` INTEGER NOT NULL,
+                                    `isVoiceMessage` INTEGER NOT NULL,
+                                    `downloadStatus` TEXT NOT NULL,
+                                    `downloadProgress` REAL NOT NULL,
+                                    `isFavorite` INTEGER NOT NULL,
+                                    `dateAddedEpochMs` INTEGER NOT NULL,
+                                    `lastPlayedEpochMs` INTEGER NOT NULL,
+                                    `playCount` INTEGER NOT NULL,
+                                    `loudnessGainDb` REAL NOT NULL,
+                                    `bpm` INTEGER NOT NULL,
+                                    `normalizedSearchBlob` TEXT NOT NULL,
+                                    PRIMARY KEY(`id`)
+                                )
+                                """.trimIndent()
+                            )
+                            db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_telegramChatId_telegramMessageId` ON `tracks` (`telegramChatId`, `telegramMessageId`)")
+                            db.execSQL(
+                                """
+                                INSERT INTO tracks VALUES (
+                                    'dup_old_1', 'Song A', 'Artist', 'Album', 'TELEGRAM', 200000, 'FLAC', 1411, 44100, 16,
+                                    25000000, NULL, 'song_a.flac', NULL, 'tg://file/11?size=25000000', NULL,
+                                    -1001, 'Forum Chat', 77, 11, 900, 'Ballad Topic', NULL, 'BALLAD', 0, 0,
+                                    'NONE', 0.0, 0, 1000, 0, 0, 0.0, 90, 'song a'
+                                )
+                                """.trimIndent()
+                            )
+                            db.execSQL(
+                                """
+                                INSERT INTO tracks VALUES (
+                                    'tg_-1001_77', 'Song A', 'Artist', 'Album', 'TELEGRAM', 200000, 'FLAC', 1411, 44100, 16,
+                                    25000000, NULL, 'song_a.flac', NULL, 'tg://file/12?size=25000000', '/tmp/song_a.flac',
+                                    -1001, 'Forum Chat', 77, 12, 900, 'Ballad Topic', NULL, 'BALLAD', 0, 0,
+                                    'COMPLETED', 1.0, 1, 2000, 0, 5, 0.0, 90, 'song a'
+                                )
+                                """.trimIndent()
+                            )
+                        }
+
+                        override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                    })
+                    .build()
+            )
+            helper.writableDatabase.close()
+            helper.close()
+
+            // 2. Open with Room + MIGRATION_2_3 — create remaining tables or test MIGRATION_2_3 directly via SupportSQLite + verify queries
+            val migratedHelper = FrameworkSQLiteOpenHelperFactory().create(
+                SupportSQLiteOpenHelper.Configuration.builder(context)
+                    .name(dbName)
+                    .callback(object : SupportSQLiteOpenHelper.Callback(3) {
+                        override fun onCreate(db: SupportSQLiteDatabase) = Unit
+                        override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                            if (oldVersion == 2 && newVersion == 3) {
+                                MusicPlayerDatabase.MIGRATION_2_3.migrate(db)
+                            }
+                        }
+                    })
+                    .build()
+            )
+            val sdb = migratedHelper.writableDatabase
+            sdb.query("SELECT id, telegramRemoteFileId FROM tracks WHERE telegramChatId = -1001 AND telegramMessageId = 77").use { cursor ->
+                assertEquals(1, cursor.count)
+                assertTrue(cursor.moveToFirst())
+                assertEquals("tg_-1001_77", cursor.getString(0))
+            }
+            sdb.close()
+            migratedHelper.close()
+            context.deleteDatabase(dbName)
+
+            // 3. Verify distinct count DAO helpers never double-count after repeated upserts
+            val memDb = Room.inMemoryDatabaseBuilder(context, MusicPlayerDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+            val track1 = TrackEntity(
+                id = "tg_-2001_101",
+                title = "Track 1",
+                artist = "Artist",
+                album = "Forum",
+                source = "TELEGRAM",
+                durationMs = 180_000L,
+                format = "FLAC",
+                bitrateKbps = 1411,
+                sampleRateHz = 44100,
+                bitDepth = 16,
+                fileSizeBytes = 10_000L,
+                fileHash = null,
+                fileName = "t1.flac",
+                artworkUri = null,
+                streamUri = "tg://file/101?size=10000",
+                localPath = null,
+                telegramChatId = -2001L,
+                telegramChatTitle = "Forum",
+                telegramMessageId = 101L,
+                telegramFileId = 101,
+                telegramRemoteFileId = "remote_101",
+                telegramThreadId = 50L,
+                telegramTopicName = "Pop",
+                youtubeVideoId = null,
+                genre = "POP",
+                genreManuallyEdited = false,
+                isVoiceMessage = false,
+                downloadStatus = "NONE",
+                downloadProgress = 0f,
+                isFavorite = false,
+                dateAddedEpochMs = 1_000L,
+                lastPlayedEpochMs = 0L,
+                playCount = 0,
+                loudnessGainDb = 0f,
+                bpm = 0,
+                normalizedSearchBlob = "track 1"
+            )
+            val track2 = track1.copy(
+                id = "tg_-2001_102",
+                title = "Track 2",
+                telegramMessageId = 102L,
+                telegramFileId = 102,
+                telegramRemoteFileId = "remote_102",
+                normalizedSearchBlob = "track 2"
+            )
+            memDb.trackDao().upsertTracks(listOf(track1, track2))
+            memDb.trackDao().upsertTracks(listOf(track1, track2)) // Re-sync upsert
+            assertEquals(2, memDb.trackDao().countDistinctTelegramTracksForChat(-2001L))
+            assertEquals(2, memDb.trackDao().countDistinctTelegramTracksForTopic(-2001L, 50L))
+            memDb.close()
+        }
+    }
+
+    @Test
+    fun telegramFileResolverRecoversViaRemoteFileIdAndGetMessageFallback() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val memDb = Room.inMemoryDatabaseBuilder(context, MusicPlayerDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+            val logger = ActivityLogger(memDb.activityLogDao())
+
+            val staleRemoteTrack = TrackEntity(
+                id = "tg_10_500",
+                title = "Restart Track",
+                artist = "Artist",
+                album = "Chat",
+                source = "TELEGRAM",
+                durationMs = 200_000L,
+                format = "MP3",
+                bitrateKbps = 320,
+                sampleRateHz = 44100,
+                bitDepth = null,
+                fileSizeBytes = 8_000_000L,
+                fileHash = null,
+                fileName = "restart.mp3",
+                artworkUri = null,
+                streamUri = "tg://file/5310?size=8000000",
+                localPath = null,
+                telegramChatId = 10L,
+                telegramChatTitle = "Chat",
+                telegramMessageId = 500L,
+                telegramFileId = 5310,
+                telegramRemoteFileId = "perm_remote_500",
+                telegramThreadId = null,
+                telegramTopicName = null,
+                youtubeVideoId = null,
+                genre = "POP",
+                genreManuallyEdited = false,
+                isVoiceMessage = false,
+                downloadStatus = "NONE",
+                downloadProgress = 0f,
+                isFavorite = false,
+                dateAddedEpochMs = 1_000L,
+                lastPlayedEpochMs = 0L,
+                playCount = 0,
+                loudnessGainDb = 0f,
+                bpm = 0,
+                normalizedSearchBlob = "restart track"
+            )
+            val legacyNoRemoteTrack = staleRemoteTrack.copy(
+                id = "tg_10_501",
+                telegramMessageId = 501L,
+                telegramFileId = 6310,
+                telegramRemoteFileId = null,
+                streamUri = "tg://file/6310?size=8000000"
+            )
+            memDb.trackDao().upsertTracks(listOf(staleRemoteTrack, legacyNoRemoteTrack))
+
+            val fakeClient = object : com.laughing.musicplayer.data.telegram.TelegramFileClient {
+                override suspend fun getFile(fileId: Int, timeoutMs: Long): Result<org.drinkless.tdlib.TdApi.File> {
+                    return Result.failure(IllegalStateException("File not found #$fileId"))
+                }
+
+                override suspend fun getRemoteFile(
+                    remoteFileId: String,
+                    fileType: org.drinkless.tdlib.TdApi.FileType,
+                    timeoutMs: Long
+                ): Result<org.drinkless.tdlib.TdApi.File> {
+                    if (remoteFileId == "perm_remote_500") {
+                        return Result.success(
+                            org.drinkless.tdlib.TdApi.File().apply {
+                                id = 9901
+                                size = 8_000_000L
+                                remote = org.drinkless.tdlib.TdApi.RemoteFile().apply { id = "perm_remote_500" }
+                                local = org.drinkless.tdlib.TdApi.LocalFile()
+                            }
+                        )
+                    }
+                    return Result.failure(IllegalStateException("Unknown remote"))
+                }
+
+                override suspend fun getMessage(
+                    chatId: Long,
+                    messageId: Long,
+                    timeoutMs: Long
+                ): Result<org.drinkless.tdlib.TdApi.Message> {
+                    if (chatId == 10L && messageId == 501L) {
+                        val audio = org.drinkless.tdlib.TdApi.Audio().apply {
+                            this.audio = org.drinkless.tdlib.TdApi.File().apply {
+                                id = 8802
+                                size = 8_000_000L
+                                remote = org.drinkless.tdlib.TdApi.RemoteFile().apply { id = "recovered_remote_501" }
+                                local = org.drinkless.tdlib.TdApi.LocalFile()
+                            }
+                        }
+                        return Result.success(
+                            org.drinkless.tdlib.TdApi.Message().apply {
+                                id = 501L
+                                this.chatId = 10L
+                                content = org.drinkless.tdlib.TdApi.MessageAudio().apply { this.audio = audio }
+                            }
+                        )
+                    }
+                    return Result.failure(IllegalStateException("Message not found"))
+                }
+
+                override suspend fun downloadFile(
+                    fileId: Int,
+                    priority: Int,
+                    offset: Long,
+                    limit: Long,
+                    synchronous: Boolean,
+                    timeoutMs: Long
+                ): Result<org.drinkless.tdlib.TdApi.File> {
+                    return if (fileId == 9901 || fileId == 8802) {
+                        Result.success(
+                            org.drinkless.tdlib.TdApi.File().apply {
+                                id = fileId
+                                size = 8_000_000L
+                                remote = org.drinkless.tdlib.TdApi.RemoteFile().apply {
+                                    id = if (fileId == 9901) "perm_remote_500" else "recovered_remote_501"
+                                }
+                                local = org.drinkless.tdlib.TdApi.LocalFile()
+                            }
+                        )
+                    } else {
+                        Result.failure(IllegalStateException("Không tìm thấy tệp Telegram #$fileId"))
+                    }
+                }
+            }
+
+            val resolver = com.laughing.musicplayer.data.telegram.TelegramFileResolver(
+                client = fakeClient,
+                trackDao = memDb.trackDao(),
+                storageManager = null,
+                logger = logger
+            )
+
+            // Case A: Stale fileId recovered via GetRemoteFile
+            val resA = resolver.resolveAndStartDownload(
+                target = com.laughing.musicplayer.data.telegram.TelegramFileTarget(
+                    fileId = 5310,
+                    expectedSize = 8_000_000L
+                ),
+                priority = 32,
+                offset = 0L,
+                limit = 0L
+            )
+            assertTrue(resA.isSuccess)
+            assertEquals(9901, resA.getOrThrow().fileId)
+            val updatedA = memDb.trackDao().getTrackById("tg_10_500")
+            assertEquals(9901, updatedA?.telegramFileId)
+            assertEquals("perm_remote_500", updatedA?.telegramRemoteFileId)
+
+            // Case B: Stale legacy row without remoteFileId recovered via GetMessage fallback
+            val resB = resolver.resolveAndStartDownload(
+                target = com.laughing.musicplayer.data.telegram.TelegramFileTarget(
+                    fileId = 6310,
+                    expectedSize = 8_000_000L
+                ),
+                priority = 32,
+                offset = 0L,
+                limit = 0L
+            )
+            assertTrue(resB.isSuccess)
+            assertEquals(8802, resB.getOrThrow().fileId)
+            val updatedB = memDb.trackDao().getTrackById("tg_10_501")
+            assertEquals(8802, updatedB?.telegramFileId)
+            assertEquals("recovered_remote_501", updatedB?.telegramRemoteFileId)
+
+            memDb.close()
+        }
+    }
+
+    @Test
+    fun telegramSourcePickerRendersSelectAllAndDeselectOnSingleHorizontalLine() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("nav_settings").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_tg_sources"))
+        composeRule.onNodeWithTag("setting_tg_sources").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("telegram_source_picker_screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("tg_select_all_btn").assertIsDisplayed()
+        composeRule.onNodeWithTag("tg_deselect_all_btn").assertIsDisplayed()
+
+        val deselectTextBounds = composeRule.onNodeWithText("Bỏ chọn").assertIsDisplayed().getBoundsInRoot()
+        assertTrue(
+            "Bỏ chọn label must stay horizontal (width=${deselectTextBounds.width}, height=${deselectTextBounds.height})",
+            deselectTextBounds.width > deselectTextBounds.height
+        )
     }
 }

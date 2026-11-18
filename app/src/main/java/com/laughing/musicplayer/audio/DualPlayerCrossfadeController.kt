@@ -34,6 +34,7 @@ import com.laughing.musicplayer.data.local.TrackDao
 import com.laughing.musicplayer.data.storage.CacheManager
 import com.laughing.musicplayer.data.telegram.TelegramAudioDataSource
 import com.laughing.musicplayer.data.telegram.TelegramCore
+import com.laughing.musicplayer.data.telegram.TelegramFileResolver
 import com.laughing.musicplayer.data.youtube.YouTubeMusicRepository
 import com.laughing.musicplayer.data.youtube.YouTubeSessionCookieManager
 import com.laughing.musicplayer.integrations.NetworkProxyManager
@@ -77,6 +78,7 @@ data class PlaybackState(
 class DualPlayerCrossfadeController(
     private val context: Context,
     private val telegramCore: TelegramCore,
+    private val telegramFileResolver: TelegramFileResolver,
     private val cacheManager: CacheManager,
     private val youTubeRepository: YouTubeMusicRepository,
     private val trackDao: TrackDao,
@@ -92,7 +94,12 @@ class DualPlayerCrossfadeController(
 
     private val routingDataSourceFactory = object : DataSource.Factory {
         private val defaultFactory = DefaultDataSource.Factory(context)
-        private val tgFactory = TelegramAudioDataSource.Factory(telegramCore, cacheManager, logger)
+        private val tgFactory = TelegramAudioDataSource.Factory(
+            telegramCore,
+            telegramFileResolver,
+            cacheManager,
+            logger
+        )
 
         override fun createDataSource(): DataSource {
             return object : DataSource {
@@ -630,6 +637,31 @@ class DualPlayerCrossfadeController(
                 else -> null
             }
             return Result.success(ResolvedPlayableMedia(resolved.streamUrl, updatedTrack, containerMime))
+        }
+        if (track.source == MusicSource.TELEGRAM) {
+            val latestTrack = withContext(Dispatchers.IO) {
+                trackDao.getTrackById(track.id)?.toDomain() ?: track
+            }
+            val fileId = latestTrack.telegramFileId
+                ?: latestTrack.streamUri?.let { Uri.parse(it).lastPathSegment?.toIntOrNull() }
+                ?: 0
+            val enrichedUri = if (fileId > 0 || !latestTrack.telegramRemoteFileId.isNullOrBlank() ||
+                (latestTrack.telegramChatId != null && latestTrack.telegramMessageId != null)
+            ) {
+                TelegramFileResolver.buildStreamUri(
+                    fileId = fileId,
+                    fileSize = latestTrack.fileSizeBytes,
+                    chatId = latestTrack.telegramChatId,
+                    messageId = latestTrack.telegramMessageId,
+                    remoteFileId = latestTrack.telegramRemoteFileId,
+                    trackId = latestTrack.id
+                )
+            } else {
+                latestTrack.streamUri
+            }
+            val validUri = enrichedUri
+                ?: return Result.failure(IllegalStateException("Không tìm thấy luồng phát cho '${track.title}'"))
+            return Result.success(ResolvedPlayableMedia(validUri, latestTrack))
         }
         val uri = track.streamUri
             ?: return Result.failure(IllegalStateException("Không tìm thấy luồng phát cho '${track.title}'"))

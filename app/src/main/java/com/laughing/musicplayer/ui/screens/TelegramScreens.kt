@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -599,14 +600,19 @@ fun TelegramSourcePickerScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Quay lại", tint = colors.accent)
                     }
                     Text(
                         text = "Chọn nguồn nhạc Telegram",
                         style = MaterialTheme.typography.titleLarge,
-                        color = colors.textPrimary
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 IconButton(
@@ -662,21 +668,60 @@ fun TelegramSourcePickerScreen(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Switch(
                         checked = onlyWithMusic,
                         onCheckedChange = { onlyWithMusic = it },
                         colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = colors.accent)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Chỉ hội thoại có nhạc", style = MaterialTheme.typography.bodyMedium, color = colors.textPrimary)
+                    Text(
+                        text = "Chỉ hội thoại có nhạc",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                Row {
-                    TextButton(onClick = { viewModel.selectAllTelegramChats() }) { Text("Chọn tất cả", color = colors.accent) }
-                    TextButton(onClick = { viewModel.deselectAllTelegramChats() }) { Text("Bỏ chọn", color = colors.textSecondary) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    TextButton(
+                        onClick = { viewModel.selectAllTelegramChats() },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minWidth = 1.dp, minHeight = 48.dp)
+                            .testTag("tg_select_all_btn")
+                    ) {
+                        Text(
+                            text = "Chọn tất cả",
+                            color = colors.accent,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                    TextButton(
+                        onClick = { viewModel.deselectAllTelegramChats() },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minWidth = 1.dp, minHeight = 48.dp)
+                            .testTag("tg_deselect_all_btn")
+                    ) {
+                        Text(
+                            text = "Bỏ chọn",
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                 }
             }
 

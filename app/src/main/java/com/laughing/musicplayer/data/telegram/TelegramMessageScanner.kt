@@ -42,13 +42,13 @@ class TelegramMessageScanner(
     suspend fun scanSelectedSources(fullRescan: Boolean = false): Int {
         val selected = telegramDao.getSelectedSources()
         if (selected.isEmpty()) return 0
-        var totalImported = 0
+        var totalTracks = 0
         for (source in selected) {
-            totalImported += concurrencySemaphore.withPermit {
+            totalTracks += concurrencySemaphore.withPermit {
                 scanChat(source.chatId, fullRescan = fullRescan)
             }
         }
-        return totalImported
+        return totalTracks
     }
 
     suspend fun scanChat(chatId: Long, fullRescan: Boolean = false): Int {
@@ -76,8 +76,11 @@ class TelegramMessageScanner(
             return scanStandardChat(chat, includeVoice, fullRescan)
         }
 
+        val checkpoint = if (fullRescan) null else telegramDao.getCheckpoint(chat.id)
+        val stopAtNewestId = if (checkpoint?.completedInitialScan == true) checkpoint.newestMessageId else 0L
         val topicNameMap = topics.associate { it.topicId to it.name }
-        var totalTracks = 0
+        val seenMessageKeys = HashSet<String>()
+        var newestSeenId = checkpoint?.newestMessageId ?: 0L
         val updatedTopics = mutableListOf<ForumTopicEntity>()
 
         for (topic in topics) {
@@ -93,7 +96,15 @@ class TelegramMessageScanner(
                 )
                 if (messages.isEmpty()) break
 
-                messages.forEach { msg ->
+                var reachedAlreadySynced = false
+                for (msg in messages) {
+                    if (msg.id > newestSeenId) newestSeenId = msg.id
+                    if (stopAtNewestId > 0L && msg.id <= stopAtNewestId) {
+                        reachedAlreadySynced = true
+                        break
+                    }
+                    val uniqueKey = "${msg.chatId}_${msg.id}"
+                    if (!seenMessageKeys.add(uniqueKey)) continue
                     extractTrackFromMessage(
                         msg = msg,
                         chatTitle = chat.title,
@@ -102,6 +113,7 @@ class TelegramMessageScanner(
                         includeVoice = includeVoice
                     )?.let { topicResults += it }
                 }
+                if (reachedAlreadySynced) break
                 val oldestId = messages.minOfOrNull { it.id } ?: break
                 if (oldestId == fromMsgId) break
                 fromMsgId = oldestId
@@ -111,38 +123,69 @@ class TelegramMessageScanner(
 
             if (topicResults.isNotEmpty()) {
                 persistMergedTracks(topicResults)
-                totalTracks += topicResults.size
             }
+            val deduplicatedTopicCount = trackDao.countDistinctTelegramTracksForTopic(
+                chatId = chat.id,
+                threadId = topic.messageThreadId
+            )
             updatedTopics += ForumTopicEntity(
                 chatId = chat.id,
                 messageThreadId = topic.messageThreadId,
                 topicId = topic.topicId,
                 name = topic.name,
                 iconUrl = topic.iconUrl,
-                trackCount = topicResults.size
+                trackCount = deduplicatedTopicCount
             )
             logger.log(
                 "TG_SYNC",
                 "INFO",
-                "Forum topic '${topic.name}' (${topic.topicId}): ${topicResults.size} bài nhạc"
+                "Forum topic '${topic.name}' (${topic.topicId}): $deduplicatedTopicCount bài nhạc"
             )
         }
 
-        val checkpoint = if (fullRescan) null else telegramDao.getCheckpoint(chat.id)
-        val extra = scanPagedHistory(chat, checkpoint, includeVoice, topicNameMap)
-        totalTracks += extra
+        // Catch only messages that were not already visited by topic scans (e.g., general/un-threaded messages)
+        val newlyAddedFromGeneral = scanPagedHistory(
+            chat = chat,
+            checkpoint = checkpoint,
+            includeVoice = includeVoice,
+            topicNameMap = topicNameMap,
+            excludedMessageKeys = seenMessageKeys
+        )
 
-        if (updatedTopics.isNotEmpty()) {
-            telegramDao.upsertTopics(updatedTopics)
+        if (newestSeenId > (checkpoint?.newestMessageId ?: 0L)) {
+            val latestCheckpoint = telegramDao.getCheckpoint(chat.id)
+            telegramDao.upsertCheckpoint(
+                SyncCheckpointEntity(
+                    chatId = chat.id,
+                    oldestMessageId = latestCheckpoint?.oldestMessageId ?: 0L,
+                    newestMessageId = maxOf(newestSeenId, latestCheckpoint?.newestMessageId ?: 0L),
+                    completedInitialScan = latestCheckpoint?.completedInitialScan ?: true,
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
         }
+
+        val refreshedTopics = updatedTopics.map { topicEntity ->
+            val refreshedCount = if (newlyAddedFromGeneral > 0) {
+                trackDao.countDistinctTelegramTracksForTopic(chat.id, topicEntity.messageThreadId)
+            } else {
+                topicEntity.trackCount
+            }
+            topicEntity.copy(trackCount = refreshedCount)
+        }
+        if (refreshedTopics.isNotEmpty()) {
+            telegramDao.upsertTopics(refreshedTopics)
+        }
+
+        val deduplicatedChatCount = trackDao.countDistinctTelegramTracksForChat(chat.id)
         telegramDao.updateSyncStats(
             chatId = chat.id,
-            audioCount = totalTracks,
-            topicCount = updatedTopics.size,
+            audioCount = deduplicatedChatCount,
+            topicCount = refreshedTopics.size,
             lastMsgId = chat.lastMessage?.id ?: 0L,
             ts = System.currentTimeMillis()
         )
-        return totalTracks
+        return deduplicatedChatCount
     }
 
     private suspend fun scanStandardChat(
@@ -151,22 +194,31 @@ class TelegramMessageScanner(
         fullRescan: Boolean
     ): Int {
         val checkpoint = if (fullRescan) null else telegramDao.getCheckpoint(chat.id)
-        val count = scanPagedHistory(chat, checkpoint, includeVoice, emptyMap())
+        val seenMessageKeys = HashSet<String>()
+        scanPagedHistory(
+            chat = chat,
+            checkpoint = checkpoint,
+            includeVoice = includeVoice,
+            topicNameMap = emptyMap(),
+            excludedMessageKeys = seenMessageKeys
+        )
+        val deduplicatedChatCount = trackDao.countDistinctTelegramTracksForChat(chat.id)
         telegramDao.updateSyncStats(
             chatId = chat.id,
-            audioCount = count,
+            audioCount = deduplicatedChatCount,
             topicCount = 0,
             lastMsgId = chat.lastMessage?.id ?: 0L,
             ts = System.currentTimeMillis()
         )
-        return count
+        return deduplicatedChatCount
     }
 
     private suspend fun scanPagedHistory(
         chat: TdApi.Chat,
         checkpoint: SyncCheckpointEntity?,
         includeVoice: Boolean,
-        topicNameMap: Map<Long, String>
+        topicNameMap: Map<Long, String>,
+        excludedMessageKeys: MutableSet<String> = HashSet()
     ): Int {
         var fromMessageId = if (checkpoint != null && !checkpoint.completedInitialScan) {
             checkpoint.oldestMessageId
@@ -204,6 +256,8 @@ class TelegramMessageScanner(
                     reachedAlreadySynced = true
                     break
                 }
+                val uniqueKey = "${msg.chatId}_${msg.id}"
+                if (!excludedMessageKeys.add(uniqueKey)) continue
                 val topicKey = extractTopicKey(msg)
                 val topicName = topicKey?.let { topicNameMap[it] }
                 extractTrackFromMessage(
@@ -253,7 +307,7 @@ class TelegramMessageScanner(
                 updatedAtEpochMs = System.currentTimeMillis()
             )
         )
-        logger.log("TG_SYNC", "INFO", "Đồng bộ '${chat.title}': đã quét $page trang ($totalAdded bài)")
+        logger.log("TG_SYNC", "INFO", "Đồng bộ '${chat.title}': đã quét $page trang ($totalAdded bài mới)")
         return totalAdded
     }
 
@@ -317,6 +371,7 @@ class TelegramMessageScanner(
                 )
 
                 val guessedSpecs = inferSpecsFromMeta(audio.fileName, format, bitrate)
+                val remoteFileId = audio.audio.remote?.id?.takeIf { it.isNotBlank() }
                 val track = Track(
                     id = baseId,
                     title = rawTitle,
@@ -331,11 +386,19 @@ class TelegramMessageScanner(
                     fileSizeBytes = fileSize,
                     fileName = audio.fileName.ifBlank { "$rawTitle.${format.extension}" },
                     artworkUri = artworkPath,
-                    streamUri = "tg://file/${audio.audio.id}?size=$fileSize",
+                    streamUri = TelegramFileResolver.buildStreamUri(
+                        fileId = audio.audio.id,
+                        fileSize = fileSize,
+                        chatId = msg.chatId,
+                        messageId = msg.id,
+                        remoteFileId = remoteFileId,
+                        trackId = baseId
+                    ),
                     telegramChatId = msg.chatId,
                     telegramChatTitle = chatTitle,
                     telegramMessageId = msg.id,
                     telegramFileId = audio.audio.id,
+                    telegramRemoteFileId = remoteFileId,
                     telegramThreadId = effectiveThreadId,
                     telegramTopicName = topicNameOverride,
                     genre = AutoGenreClassifier.classify(
@@ -392,6 +455,7 @@ class TelegramMessageScanner(
                 } else 0
                 val guessedSpecs = inferSpecsFromMeta(doc.fileName, format, bitrate)
 
+                val docRemoteFileId = doc.document.remote?.id?.takeIf { it.isNotBlank() }
                 val track = Track(
                     id = baseId,
                     title = title,
@@ -406,11 +470,19 @@ class TelegramMessageScanner(
                     fileSizeBytes = fileSize,
                     fileName = doc.fileName,
                     artworkUri = artworkPath,
-                    streamUri = "tg://file/${doc.document.id}?size=$fileSize",
+                    streamUri = TelegramFileResolver.buildStreamUri(
+                        fileId = doc.document.id,
+                        fileSize = fileSize,
+                        chatId = msg.chatId,
+                        messageId = msg.id,
+                        remoteFileId = docRemoteFileId,
+                        trackId = baseId
+                    ),
                     telegramChatId = msg.chatId,
                     telegramChatTitle = chatTitle,
                     telegramMessageId = msg.id,
                     telegramFileId = doc.document.id,
+                    telegramRemoteFileId = docRemoteFileId,
                     telegramThreadId = effectiveThreadId,
                     telegramTopicName = topicNameOverride,
                     genre = AutoGenreClassifier.classify(
@@ -434,6 +506,7 @@ class TelegramMessageScanner(
                 val fileSize = voice.voice.size.takeIf { it > 0 } ?: voice.voice.expectedSize
                 val durationMs = voice.duration * 1000L
                 val bitrate = if (durationMs > 0 && fileSize > 0) ((fileSize * 8L) / durationMs).toInt() else 64
+                val voiceRemoteFileId = voice.voice.remote?.id?.takeIf { it.isNotBlank() }
                 ExtractedMessageResult(
                     track = Track(
                         id = baseId,
@@ -448,11 +521,19 @@ class TelegramMessageScanner(
                         bitDepth = null,
                         fileSizeBytes = fileSize,
                         fileName = "voice_${msg.id}.ogg",
-                        streamUri = "tg://file/${voice.voice.id}?size=$fileSize",
+                        streamUri = TelegramFileResolver.buildStreamUri(
+                            fileId = voice.voice.id,
+                            fileSize = fileSize,
+                            chatId = msg.chatId,
+                            messageId = msg.id,
+                            remoteFileId = voiceRemoteFileId,
+                            trackId = baseId
+                        ),
                         telegramChatId = msg.chatId,
                         telegramChatTitle = chatTitle,
                         telegramMessageId = msg.id,
                         telegramFileId = voice.voice.id,
+                        telegramRemoteFileId = voiceRemoteFileId,
                         telegramThreadId = effectiveThreadId,
                         telegramTopicName = topicNameOverride,
                         isVoiceMessage = true,
@@ -475,8 +556,12 @@ class TelegramMessageScanner(
             storageManager.saveArtworkFile(trackId, embeddedBytes)?.let { return it }
         }
         val localThumb = thumbnailFile?.local?.path
-        if (!localThumb.isNullOrBlank() && thumbnailFile.local.isDownloadingCompleted && File(localThumb).exists()) {
-            return localThumb
+        if (!localThumb.isNullOrBlank() && thumbnailFile.local.isDownloadingCompleted) {
+            val thumbFile = File(localThumb)
+            if (thumbFile.exists()) {
+                storageManager.saveArtworkFile(trackId, thumbFile.readBytes())?.let { return it }
+                return localThumb
+            }
         }
         if (miniThumbBytes != null && miniThumbBytes.isNotEmpty()) {
             storageManager.saveArtworkFile("${trackId}_thumb", miniThumbBytes)?.let { return it }
@@ -506,20 +591,29 @@ class TelegramMessageScanner(
     }
 
     private suspend fun persistMergedTracks(results: List<ExtractedMessageResult>) {
-        val entities = results.map { item ->
+        val deduplicated = results.distinctBy { it.track.telegramChatId to it.track.telegramMessageId }
+        val entities = deduplicated.map { item ->
             val track = item.track
             val existing = trackDao.findByTelegramMessage(
                 track.telegramChatId ?: 0L,
                 track.telegramMessageId ?: 0L
             )
             val merged = if (existing != null) {
+                val existingArtValid = existing.artworkUri?.takeIf {
+                    it.startsWith("http") || File(it).exists()
+                }
+                val existingLocalValid = existing.localPath?.takeIf {
+                    it.startsWith("content://") || File(it).exists()
+                }
                 track.copy(
+                    id = existing.id,
                     isFavorite = existing.isFavorite,
                     playCount = existing.playCount,
                     lastPlayedEpochMs = existing.lastPlayedEpochMs,
-                    artworkUri = track.artworkUri ?: existing.artworkUri,
-                    localPath = existing.localPath ?: track.localPath,
-                    downloadStatus = if (existing.downloadStatus == DownloadStatus.COMPLETED.name) {
+                    artworkUri = existingArtValid ?: track.artworkUri,
+                    localPath = existingLocalValid ?: track.localPath,
+                    telegramRemoteFileId = track.telegramRemoteFileId ?: existing.telegramRemoteFileId,
+                    downloadStatus = if (existing.downloadStatus == DownloadStatus.COMPLETED.name && existingLocalValid != null) {
                         DownloadStatus.COMPLETED
                     } else track.downloadStatus,
                     genre = if (existing.genreManuallyEdited) {
@@ -536,19 +630,28 @@ class TelegramMessageScanner(
         }
         trackDao.upsertTracks(entities)
 
-        // Download higher-res TDLib album thumbnails cleanly with short timeout when available
-        results.forEach { item ->
+        // Download higher-res TDLib album thumbnails cleanly and copy into persistent artwork storage
+        deduplicated.forEach { item ->
             val thumb = item.thumbnailFile ?: return@forEach
+            val existingArtwork = trackDao.getTrackById(item.track.id)?.artworkUri
+            val hasFullArtwork = !existingArtwork.isNullOrBlank() &&
+                !existingArtwork.endsWith("_thumb.jpg") &&
+                (existingArtwork.startsWith("http") || File(existingArtwork).exists())
+            if (hasFullArtwork) return@forEach
+
             if (!thumb.local.isDownloadingCompleted && thumb.id > 0) {
                 val downloaded = core.sendQuery(
                     TdApi.DownloadFile(thumb.id, 4, 0L, 0L, true),
                     timeoutMs = 5_000L
                 ).getOrNull()
                 val thumbPath = downloaded?.local?.path
-                if (!thumbPath.isNullOrBlank() && File(thumbPath).exists()) {
+                val thumbFile = thumbPath?.let(::File)?.takeIf { it.exists() }
+                if (thumbFile != null) {
+                    val persistentPath = storageManager.saveArtworkFile(item.track.id, thumbFile.readBytes())
+                        ?: thumbPath
                     trackDao.updateTrackMetadata(
                         trackId = item.track.id,
-                        artworkUri = thumbPath,
+                        artworkUri = persistentPath,
                         bitrateKbps = 0,
                         sampleRateHz = 0,
                         bitDepth = null,

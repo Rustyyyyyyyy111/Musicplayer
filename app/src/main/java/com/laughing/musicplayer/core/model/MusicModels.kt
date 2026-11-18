@@ -161,6 +161,7 @@ data class Track(
     val telegramChatTitle: String? = null,
     val telegramMessageId: Long? = null,
     val telegramFileId: Int? = null,
+    val telegramRemoteFileId: String? = null,
     val telegramThreadId: Long? = null,
     val telegramTopicName: String? = null,
     val youtubeVideoId: String? = null,

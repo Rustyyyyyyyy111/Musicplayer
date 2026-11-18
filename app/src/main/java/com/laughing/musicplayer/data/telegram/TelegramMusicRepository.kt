@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit
 class TelegramMusicRepository(
     private val context: Context,
     private val core: TelegramCore,
+    private val fileResolver: TelegramFileResolver,
     private val chatBrowser: TelegramChatBrowser,
     private val messageScanner: TelegramMessageScanner,
     private val trackDao: TrackDao,
@@ -67,7 +68,12 @@ class TelegramMusicRepository(
     }
 
     fun startOfflineDownload(track: Track) {
-        val fileId = track.telegramFileId ?: return
+        if (track.telegramFileId == null &&
+            track.telegramRemoteFileId.isNullOrBlank() &&
+            (track.telegramChatId == null || track.telegramMessageId == null)
+        ) {
+            return
+        }
         val taskId = "dl_${track.id}"
         activeDownloadJobs[taskId]?.cancel()
 
@@ -90,15 +96,30 @@ class TelegramMusicRepository(
                 )
             )
 
-            core.sendQuery(TdApi.DownloadFile(fileId, 16, 0L, 0L, false)).onFailure { err ->
+            val resolved = fileResolver.resolveAndStartDownload(
+                target = TelegramFileTarget(
+                    trackId = track.id,
+                    fileId = track.telegramFileId ?: 0,
+                    remoteFileId = track.telegramRemoteFileId,
+                    chatId = track.telegramChatId,
+                    messageId = track.telegramMessageId,
+                    expectedSize = track.fileSizeBytes,
+                    isVoiceMessage = track.isVoiceMessage,
+                    format = track.format
+                ),
+                priority = 16,
+                offset = 0L,
+                limit = 0L
+            ).getOrElse { err ->
                 markFailed(taskId, track, err.message ?: "Lỗi bắt đầu tải Telegram")
                 return@launch
             }
+            val activeFileId = resolved.fileId
 
             var stallCounter = 0
             var lastBytes = 0L
             while (true) {
-                val tdFile = core.sendQuery(TdApi.GetFile(fileId)).getOrNull()
+                val tdFile = core.sendQuery(TdApi.GetFile(activeFileId)).getOrNull()
                 if (tdFile == null) {
                     delay(400L)
                     continue
@@ -174,8 +195,8 @@ class TelegramMusicRepository(
                     // MelodyRide v1.2.18 auto-recovery for stalled downloads
                     if (stallCounter >= 25) {
                         logger.log("DOWNLOAD", "WARN", "Tải '${track.title}' bị đứng, đang tự khôi phục...")
-                        core.sendQuery(TdApi.CancelDownloadFile(fileId, false))
-                        core.sendQuery(TdApi.DownloadFile(fileId, 16, 0L, 0L, false))
+                        core.sendQuery(TdApi.CancelDownloadFile(activeFileId, false))
+                        core.sendQuery(TdApi.DownloadFile(activeFileId, 16, 0L, 0L, false))
                         stallCounter = 0
                     }
                 } else {
@@ -191,9 +212,11 @@ class TelegramMusicRepository(
     fun pauseDownload(track: Track) {
         val taskId = "dl_${track.id}"
         activeDownloadJobs.remove(taskId)?.cancel()
-        val fileId = track.telegramFileId ?: return
         scope.launch {
-            core.sendQuery(TdApi.CancelDownloadFile(fileId, false))
+            val fileId = trackDao.getTrackById(track.id)?.telegramFileId ?: track.telegramFileId
+            if (fileId != null && fileId > 0) {
+                core.sendQuery(TdApi.CancelDownloadFile(fileId, false))
+            }
             trackDao.updateDownloadState(track.id, DownloadStatus.PAUSED.name, track.downloadProgress, null)
             downloadCacheDao.getDownloadById(taskId)?.let { prev ->
                 downloadCacheDao.upsertDownload(prev.copy(status = DownloadStatus.PAUSED.name, updatedAtEpochMs = System.currentTimeMillis()))
@@ -204,9 +227,11 @@ class TelegramMusicRepository(
     fun cancelDownload(track: Track) {
         val taskId = "dl_${track.id}"
         activeDownloadJobs.remove(taskId)?.cancel()
-        val fileId = track.telegramFileId ?: return
         scope.launch {
-            core.sendQuery(TdApi.CancelDownloadFile(fileId, true))
+            val fileId = trackDao.getTrackById(track.id)?.telegramFileId ?: track.telegramFileId
+            if (fileId != null && fileId > 0) {
+                core.sendQuery(TdApi.CancelDownloadFile(fileId, true))
+            }
             trackDao.updateDownloadState(track.id, DownloadStatus.NONE.name, 0f, null)
             downloadCacheDao.deleteDownload(taskId)
         }

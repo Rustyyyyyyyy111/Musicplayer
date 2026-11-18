@@ -4,6 +4,7 @@ import com.laughing.musicplayer.core.model.TelegramTopicItem
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.data.local.ForumTopicEntity
 import com.laughing.musicplayer.data.local.TelegramDao
+import com.laughing.musicplayer.data.local.TrackDao
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import org.drinkless.tdlib.TdApi
@@ -11,6 +12,7 @@ import org.drinkless.tdlib.TdApi
 class TelegramForumTopics(
     private val core: TelegramCore,
     private val telegramDao: TelegramDao,
+    private val trackDao: TrackDao,
     private val logger: ActivityLogger
 ) {
     fun observeAllTopics(): Flow<List<TelegramTopicItem>> =
@@ -46,18 +48,19 @@ class TelegramForumTopics(
             val topics = result.topics
             if (topics.isEmpty()) break
 
-            topics.forEach { topic ->
+            for (topic in topics) {
                 val info = topic.info
                 val forumTopicId = info.forumTopicId
                 val threadId = forumTopicId.toLong()
                 val iconFileId = info.icon?.customEmojiId
+                val existingCount = trackDao.countDistinctTelegramTracksForTopic(chatId, threadId)
                 collected += TelegramTopicItem(
                     chatId = chatId,
                     messageThreadId = threadId,
                     topicId = threadId,
                     name = info.name.ifBlank { "Chủ đề #$forumTopicId" },
                     iconUrl = iconFileId?.takeIf { it != 0L }?.let { "tg_emoji://$it" },
-                    trackCount = 0
+                    trackCount = existingCount
                 )
             }
 

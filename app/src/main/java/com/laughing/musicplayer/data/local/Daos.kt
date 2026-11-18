@@ -35,6 +35,40 @@ interface TrackDao {
     @Query("SELECT * FROM tracks WHERE telegramChatId = :chatId AND telegramMessageId = :messageId LIMIT 1")
     suspend fun findByTelegramMessage(chatId: Long, messageId: Long): TrackEntity?
 
+    @Query("SELECT * FROM tracks WHERE telegramFileId = :fileId AND source = 'TELEGRAM' LIMIT 1")
+    suspend fun findByTelegramFileId(fileId: Int): TrackEntity?
+
+    @Query("""
+        UPDATE tracks SET
+            telegramFileId = :fileId,
+            telegramRemoteFileId = COALESCE(NULLIF(:remoteFileId, ''), telegramRemoteFileId),
+            streamUri = :streamUri
+        WHERE id = :trackId
+    """)
+    suspend fun updateTelegramFileRef(
+        trackId: String,
+        fileId: Int,
+        remoteFileId: String?,
+        streamUri: String
+    )
+
+    @Query("""
+        SELECT COUNT(DISTINCT telegramMessageId) FROM tracks
+        WHERE telegramChatId = :chatId
+          AND source = 'TELEGRAM'
+          AND telegramMessageId IS NOT NULL
+    """)
+    suspend fun countDistinctTelegramTracksForChat(chatId: Long): Int
+
+    @Query("""
+        SELECT COUNT(DISTINCT telegramMessageId) FROM tracks
+        WHERE telegramChatId = :chatId
+          AND telegramThreadId = :threadId
+          AND source = 'TELEGRAM'
+          AND telegramMessageId IS NOT NULL
+    """)
+    suspend fun countDistinctTelegramTracksForTopic(chatId: Long, threadId: Long): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTracks(tracks: List<TrackEntity>)
 

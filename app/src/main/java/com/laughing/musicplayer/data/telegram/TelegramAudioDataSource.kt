@@ -17,21 +17,24 @@ import java.io.RandomAccessFile
 @UnstableApi
 class TelegramAudioDataSource(
     private val core: TelegramCore,
+    private val fileResolver: TelegramFileResolver,
     private val cacheManager: CacheManager,
     private val logger: ActivityLogger
 ) : BaseDataSource(/* isNetwork = */ true) {
 
     class Factory(
         private val core: TelegramCore,
+        private val fileResolver: TelegramFileResolver,
         private val cacheManager: CacheManager,
         private val logger: ActivityLogger
     ) : DataSource.Factory {
         override fun createDataSource(): DataSource =
-            TelegramAudioDataSource(core, cacheManager, logger)
+            TelegramAudioDataSource(core, fileResolver, cacheManager, logger)
     }
 
     private var currentUri: Uri? = null
     private var fileId: Int = 0
+    private var resolvedTrackId: String? = null
     private var totalLength: Long = C.LENGTH_UNSET.toLong()
     private var readPosition: Long = 0L
     private var randomAccessFile: RandomAccessFile? = null
@@ -41,14 +44,25 @@ class TelegramAudioDataSource(
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
         currentUri = dataSpec.uri
-        fileId = dataSpec.uri.lastPathSegment?.toIntOrNull()
+        val target = TelegramFileResolver.parseTargetFromUri(dataSpec.uri)
             ?: throw IOException("URI Telegram không hợp lệ: ${dataSpec.uri}")
         readPosition = dataSpec.position
-        val expectedSize = dataSpec.uri.getQueryParameter("size")?.toLongOrNull() ?: 0L
+        val expectedSize = target.expectedSize
 
-        val initialFile = runBlocking {
-            core.sendQuery(TdApi.GetFile(fileId)).getOrNull()
-        } ?: throw IOException("Không tìm thấy tệp Telegram #$fileId")
+        val resolved = runBlocking {
+            fileResolver.resolveAndStartDownload(
+                target = target,
+                priority = 32,
+                offset = readPosition,
+                limit = 0L
+            )
+        }.getOrElse { err ->
+            throw IOException(err.message ?: "Không tìm thấy tệp Telegram #${target.fileId}", err)
+        }
+
+        fileId = resolved.fileId
+        resolvedTrackId = resolved.trackId
+        val initialFile = resolved.tdFile
 
         val resolvedSize = when {
             initialFile.size > 0L -> initialFile.size
@@ -58,37 +72,25 @@ class TelegramAudioDataSource(
         }
         totalLength = resolvedSize
 
-        // Start progressive download from the requested seek offset
-        runBlocking {
-            core.sendQuery(
-                TdApi.DownloadFile(
-                    fileId,
-                    /* priority = */ 32,
-                    /* offset = */ readPosition,
-                    /* limit = */ 0L,
-                    /* synchronous = */ false
-                )
-            )
-        }
-
         val path = waitForLocalFileReady(fileId, readPosition + 16 * 1024L, initialFile)
         localFile = File(path)
         randomAccessFile = RandomAccessFile(localFile, "r").apply {
             seek(readPosition)
         }
 
+        val trackKey = resolvedTrackId ?: "tg_$fileId"
         if (initialFile.local.isDownloadingCompleted) {
             runBlocking {
                 cacheManager.recordCacheAccess(
-                    key = "tg_stream_$fileId",
-                    trackId = "tg_$fileId",
+                    key = "tg_stream_$trackKey",
+                    trackId = trackKey,
                     file = localFile!!,
                     isPermanentOffline = false
                 )
             }
         } else {
             runBlocking {
-                cacheManager.touchCacheAccess("tg_stream_$fileId")
+                cacheManager.touchCacheAccess("tg_stream_$trackKey")
             }
         }
 
@@ -139,6 +141,7 @@ class TelegramAudioDataSource(
             opened = false
             transferEnded()
             val activeFileId = fileId
+            val activeTrackKey = resolvedTrackId ?: "tg_$activeFileId"
             val f = localFile
             runBlocking {
                 if (activeFileId != 0) {
@@ -146,8 +149,8 @@ class TelegramAudioDataSource(
                 }
                 if (f != null && f.exists()) {
                     cacheManager.recordCacheAccess(
-                        key = "tg_stream_$activeFileId",
-                        trackId = "tg_$activeFileId",
+                        key = "tg_stream_$activeTrackKey",
+                        trackId = activeTrackKey,
                         file = f,
                         isPermanentOffline = false
                     )

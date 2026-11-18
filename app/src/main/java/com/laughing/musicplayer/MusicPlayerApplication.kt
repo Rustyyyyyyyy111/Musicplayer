@@ -20,6 +20,7 @@ import com.laughing.musicplayer.data.storage.UnifiedStorageManager
 import com.laughing.musicplayer.data.telegram.TelegramAuthentication
 import com.laughing.musicplayer.data.telegram.TelegramChatBrowser
 import com.laughing.musicplayer.data.telegram.TelegramCore
+import com.laughing.musicplayer.data.telegram.TelegramFileResolver
 import com.laughing.musicplayer.data.telegram.TelegramForumTopics
 import com.laughing.musicplayer.data.telegram.TelegramMessageScanner
 import com.laughing.musicplayer.data.telegram.TelegramMusicRepository
@@ -35,8 +36,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import org.drinkless.tdlib.TdApi
+import java.util.concurrent.atomic.AtomicBoolean
 
 @UnstableApi
 class AppContainer(context: Context) {
@@ -68,8 +72,25 @@ class AppContainer(context: Context) {
 
     val telegramCore = TelegramCore(appContext, credentialStore, activityLogger)
     val telegramAuthentication = TelegramAuthentication(telegramCore, settingsDataStore, activityLogger)
-    val telegramForumTopics = TelegramForumTopics(telegramCore, database.telegramDao(), activityLogger)
-    val telegramChatBrowser = TelegramChatBrowser(telegramCore, telegramForumTopics, database.telegramDao(), activityLogger)
+    val telegramFileResolver = TelegramFileResolver(
+        telegramCore,
+        database.trackDao(),
+        storageManager,
+        activityLogger
+    )
+    val telegramForumTopics = TelegramForumTopics(
+        telegramCore,
+        database.telegramDao(),
+        database.trackDao(),
+        activityLogger
+    )
+    val telegramChatBrowser = TelegramChatBrowser(
+        telegramCore,
+        telegramForumTopics,
+        database.telegramDao(),
+        database.trackDao(),
+        activityLogger
+    )
     val telegramMessageScanner = TelegramMessageScanner(
         telegramCore,
         telegramForumTopics,
@@ -82,6 +103,7 @@ class AppContainer(context: Context) {
     val telegramMusicRepository = TelegramMusicRepository(
         appContext,
         telegramCore,
+        telegramFileResolver,
         telegramChatBrowser,
         telegramMessageScanner,
         database.trackDao(),
@@ -115,6 +137,7 @@ class AppContainer(context: Context) {
     val playerController = DualPlayerCrossfadeController(
         appContext,
         telegramCore,
+        telegramFileResolver,
         cacheManager,
         youTubeMusicRepository,
         database.trackDao(),
@@ -126,6 +149,7 @@ class AppContainer(context: Context) {
 
     @Volatile
     private var mediaControllerFuture: ListenableFuture<MediaController>? = null
+    private val hasTriggeredSessionAutoSync = AtomicBoolean(false)
 
     init {
         playerController.onEnsureMediaSessionConnected = { connectMediaSessionService() }
@@ -152,13 +176,48 @@ class AppContainer(context: Context) {
                     )
                 }
         }
+        observeTelegramStartupAutoSync()
+    }
+
+    private fun observeTelegramStartupAutoSync() {
+        if (isRobolectricEnvironment()) return
+        appScope.launch {
+            telegramCore.authState.collect { state ->
+                if (state is TdApi.AuthorizationStateReady) {
+                    if (!hasTriggeredSessionAutoSync.getAndSet(true)) {
+                        val prefs = settingsDataStore.preferencesFlow.first()
+                        if (prefs.autoSyncTelegram) {
+                            runCatching {
+                                val synced = telegramMusicRepository.syncSelectedSources(fullRescan = false)
+                                activityLogger.log(
+                                    "TG_SYNC",
+                                    "INFO",
+                                    "Đồng bộ tự động khi khởi động hoàn tất: $synced bài hát"
+                                )
+                            }.onFailure { err ->
+                                activityLogger.log(
+                                    "TG_SYNC",
+                                    "WARN",
+                                    "Đồng bộ tự động khi khởi động bỏ qua: ${err.message}"
+                                )
+                            }
+                        }
+                    }
+                } else if (state !is TdApi.AuthorizationStateReady) {
+                    hasTriggeredSessionAutoSync.set(false)
+                }
+            }
+        }
+    }
+
+    private fun isRobolectricEnvironment(): Boolean {
+        return Build.FINGERPRINT.equals("robolectric", ignoreCase = true) ||
+            Build.HARDWARE.equals("robolectric", ignoreCase = true)
     }
 
     fun connectMediaSessionService() {
         if (mediaControllerFuture != null) return
-        if (Build.FINGERPRINT.equals("robolectric", ignoreCase = true) ||
-            Build.HARDWARE.equals("robolectric", ignoreCase = true)
-        ) {
+        if (isRobolectricEnvironment()) {
             return
         }
         runCatching {

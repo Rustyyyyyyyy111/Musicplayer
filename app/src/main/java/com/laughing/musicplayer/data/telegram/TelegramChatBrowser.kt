@@ -5,6 +5,7 @@ import com.laughing.musicplayer.core.model.TelegramChatType
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.data.local.TelegramDao
 import com.laughing.musicplayer.data.local.TelegramSourceEntity
+import com.laughing.musicplayer.data.local.TrackDao
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import org.drinkless.tdlib.TdApi
@@ -13,6 +14,7 @@ class TelegramChatBrowser(
     private val core: TelegramCore,
     private val forumTopics: TelegramForumTopics,
     private val telegramDao: TelegramDao,
+    private val trackDao: TrackDao,
     private val logger: ActivityLogger
 ) {
     fun observeChats(): Flow<List<TelegramChatItem>> =
@@ -37,6 +39,7 @@ class TelegramChatBrowser(
             val topicsCount = if (isForum) {
                 forumTopics.fetchForumTopics(chatId).size
             } else 0
+            val distinctAudioCount = trackDao.countDistinctTelegramTracksForChat(chatId)
 
             val title = if (resolvedType == TelegramChatType.SAVED_MESSAGES) {
                 "Tin nhắn đã lưu (Saved Messages)"
@@ -50,8 +53,8 @@ class TelegramChatBrowser(
                 chatType = resolvedType.name,
                 isForum = isForum,
                 isSelected = prev?.isSelected ?: existingMap.containsKey(chatId),
-                audioCount = prev?.audioCount ?: 0,
-                topicCount = maxOf(prev?.topicCount ?: 0, topicsCount),
+                audioCount = distinctAudioCount,
+                topicCount = if (isForum) topicsCount else 0,
                 lastSyncedMessageId = prev?.lastSyncedMessageId ?: 0L,
                 lastSyncedEpochMs = prev?.lastSyncedEpochMs ?: 0L
             )

@@ -20,7 +20,7 @@ import com.laughing.musicplayer.core.model.Track
     indices = [
         Index(value = ["source"]),
         Index(value = ["telegramChatId", "telegramThreadId"]),
-        Index(value = ["telegramChatId", "telegramMessageId"], unique = false),
+        Index(value = ["telegramChatId", "telegramMessageId"], unique = true),
         Index(value = ["fileHash"]),
         Index(value = ["genre"])
     ]
@@ -46,6 +46,7 @@ data class TrackEntity(
     val telegramChatTitle: String?,
     val telegramMessageId: Long?,
     val telegramFileId: Int?,
+    val telegramRemoteFileId: String? = null,
     val telegramThreadId: Long?,
     val telegramTopicName: String?,
     val youtubeVideoId: String?,
@@ -83,6 +84,7 @@ data class TrackEntity(
         telegramChatTitle = telegramChatTitle,
         telegramMessageId = telegramMessageId,
         telegramFileId = telegramFileId,
+        telegramRemoteFileId = telegramRemoteFileId,
         telegramThreadId = telegramThreadId,
         telegramTopicName = telegramTopicName,
         youtubeVideoId = youtubeVideoId,
@@ -121,6 +123,7 @@ fun Track.toEntity(searchBlob: String): TrackEntity = TrackEntity(
     telegramChatTitle = telegramChatTitle,
     telegramMessageId = telegramMessageId,
     telegramFileId = telegramFileId,
+    telegramRemoteFileId = telegramRemoteFileId,
     telegramThreadId = telegramThreadId,
     telegramTopicName = telegramTopicName,
     youtubeVideoId = youtubeVideoId,
