@@ -26,12 +26,14 @@ import com.laughing.musicplayer.core.model.EqState
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.RepeatMode
 import com.laughing.musicplayer.core.model.SleepTimerMode
+import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.ReplayGainExtractor
 import com.laughing.musicplayer.data.local.SettingsDataStore
 import com.laughing.musicplayer.data.local.TrackDao
 import com.laughing.musicplayer.data.storage.CacheManager
+import com.laughing.musicplayer.data.telegram.PublicTelegramRepository
 import com.laughing.musicplayer.data.telegram.TelegramAudioDataSource
 import com.laughing.musicplayer.data.telegram.TelegramCore
 import com.laughing.musicplayer.data.telegram.TelegramFileResolver
@@ -85,10 +87,12 @@ class DualPlayerCrossfadeController(
     private val settingsDataStore: SettingsDataStore,
     private val playlistManager: PlaylistAndSmartMixManager,
     private val proxyManager: NetworkProxyManager,
-    private val logger: ActivityLogger
+    private val logger: ActivityLogger,
+    private val publicTelegramRepository: PublicTelegramRepository? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val streamRequestHeaders = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
 
     val eqProcessor = BiquadEqAudioProcessor()
 
@@ -111,17 +115,23 @@ class DualPlayerCrossfadeController(
                 }
 
                 override fun open(dataSpec: DataSpec): Long {
+                    val uriStr = dataSpec.uri.toString()
                     val chosen = when {
                         dataSpec.uri.scheme == "tg" -> tgFactory.createDataSource()
                         dataSpec.uri.scheme == "http" || dataSpec.uri.scheme == "https" -> {
-                            val ytCookie = proxyManager.getYouTubeCookieHeader(dataSpec.uri.toString())
-                            if (!ytCookie.isNullOrBlank()) {
+                            val ytCookie = proxyManager.getYouTubeCookieHeader(uriStr)
+                            val customHeaders = streamRequestHeaders[uriStr]
+                            if (!ytCookie.isNullOrBlank() || !customHeaders.isNullOrEmpty()) {
+                                val mergedProps = buildMap {
+                                    if (!customHeaders.isNullOrEmpty()) putAll(customHeaders)
+                                    if (!ytCookie.isNullOrBlank()) put("Cookie", ytCookie)
+                                }
                                 DefaultHttpDataSource.Factory()
                                     .setUserAgent(YouTubeSessionCookieManager.DEFAULT_USER_AGENT)
                                     .setAllowCrossProtocolRedirects(true)
-                                    .setConnectTimeoutMs(9_000)
-                                    .setReadTimeoutMs(9_000)
-                                    .setDefaultRequestProperties(mapOf("Cookie" to ytCookie))
+                                    .setConnectTimeoutMs(10_000)
+                                    .setReadTimeoutMs(12_000)
+                                    .setDefaultRequestProperties(mergedProps)
                                     .createDataSource()
                             } else {
                                 defaultFactory.createDataSource()
@@ -481,12 +491,19 @@ class DualPlayerCrossfadeController(
             applyTrackDspSettings(track, prefs.eqState)
             launchReplayGainProbeIfNeeded(track)
 
+            val resolveTimeoutMs = if (
+                track.source == MusicSource.TELEGRAM &&
+                track.telegramOrigin == TelegramOrigin.PERSONAL_TELEGRAM
+            ) 60_000L else 12_000L
+
             val resolvedResult = try {
-                withTimeout(9_000L) {
+                withTimeout(resolveTimeoutMs) {
                     resolvePlayableMedia(track)
                 }
             } catch (_: TimeoutCancellationException) {
-                Result.failure(IllegalStateException("Hết thời gian tải '${track.title}' (quá 9 giây)"))
+                Result.failure(
+                    IllegalStateException("Hết thời gian tải '${track.title}' (quá ${resolveTimeoutMs / 1000} giây)")
+                )
             }
 
             val resolvedMedia = resolvedResult.getOrElse { err ->
@@ -572,18 +589,23 @@ class DualPlayerCrossfadeController(
     private data class ResolvedPlayableMedia(
         val uri: String,
         val updatedTrack: Track,
-        val mimeType: String? = null
+        val mimeType: String? = null,
+        val httpHeaders: Map<String, String> = emptyMap()
     )
 
     private suspend fun resolvePlayableMedia(track: Track): Result<ResolvedPlayableMedia> {
-        if (!track.localPath.isNullOrBlank()) {
-            val path = track.localPath
-            if (path.startsWith("content://") || path.startsWith("file://")) {
-                return Result.success(ResolvedPlayableMedia(path, track))
+        val candidateLocal = track.localPath
+        if (!candidateLocal.isNullOrBlank()) {
+            if (candidateLocal.startsWith("content://")) {
+                return Result.success(ResolvedPlayableMedia(candidateLocal, track))
             }
-            val file = File(path)
-            if (file.exists()) {
-                return Result.success(ResolvedPlayableMedia(Uri.fromFile(file).toString(), track))
+            val cleanFile = if (candidateLocal.startsWith("file://")) {
+                Uri.parse(candidateLocal).path?.let(::File)
+            } else {
+                File(candidateLocal)
+            }
+            if (cleanFile != null && cleanFile.exists() && cleanFile.isFile && cleanFile.length() > 1024L) {
+                return Result.success(ResolvedPlayableMedia(Uri.fromFile(cleanFile).toString(), track))
             }
         }
         if (track.source == MusicSource.YOUTUBE_MUSIC) {
@@ -642,26 +664,37 @@ class DualPlayerCrossfadeController(
             val latestTrack = withContext(Dispatchers.IO) {
                 trackDao.getTrackById(track.id)?.toDomain() ?: track
             }
-            val fileId = latestTrack.telegramFileId
-                ?: latestTrack.streamUri?.let { Uri.parse(it).lastPathSegment?.toIntOrNull() }
-                ?: 0
-            val enrichedUri = if (fileId > 0 || !latestTrack.telegramRemoteFileId.isNullOrBlank() ||
-                (latestTrack.telegramChatId != null && latestTrack.telegramMessageId != null)
-            ) {
-                TelegramFileResolver.buildStreamUri(
-                    fileId = fileId,
-                    fileSize = latestTrack.fileSizeBytes,
-                    chatId = latestTrack.telegramChatId,
-                    messageId = latestTrack.telegramMessageId,
-                    remoteFileId = latestTrack.telegramRemoteFileId,
-                    trackId = latestTrack.id
+            if (latestTrack.telegramOrigin == TelegramOrigin.PUBLIC_TELEGRAM) {
+                val repo = publicTelegramRepository
+                    ?: return Result.failure(IllegalStateException("Dịch vụ kênh Telegram công khai chưa sẵn sàng"))
+                val streamReq = repo.resolvePlayableRequest(latestTrack).getOrElse { err ->
+                    return Result.failure(err)
+                }
+                if (streamReq.headers.isNotEmpty()) {
+                    streamRequestHeaders[streamReq.url] = streamReq.headers
+                }
+                return Result.success(
+                    ResolvedPlayableMedia(
+                        uri = streamReq.url,
+                        updatedTrack = latestTrack,
+                        mimeType = streamReq.mimeType,
+                        httpHeaders = streamReq.headers
+                    )
                 )
-            } else {
-                latestTrack.streamUri
             }
-            val validUri = enrichedUri
-                ?: return Result.failure(IllegalStateException("Không tìm thấy luồng phát cho '${track.title}'"))
-            return Result.success(ResolvedPlayableMedia(validUri, latestTrack))
+            val verifiedTrack = withContext(Dispatchers.IO) {
+                telegramFileResolver.ensureVerifiedLocalAudioFile(latestTrack)
+            }.getOrElse { err ->
+                return Result.failure(err)
+            }
+            val verifiedPath = verifiedTrack.localPath
+                ?: return Result.failure(IllegalStateException("Không tìm thấy tệp Telegram đã xác minh cho '${track.title}'"))
+            val playableUri = if (verifiedPath.startsWith("content://") || verifiedPath.startsWith("file://")) {
+                verifiedPath
+            } else {
+                Uri.fromFile(File(verifiedPath)).toString()
+            }
+            return Result.success(ResolvedPlayableMedia(playableUri, verifiedTrack))
         }
         val uri = track.streamUri
             ?: return Result.failure(IllegalStateException("Không tìm thấy luồng phát cho '${track.title}'"))
@@ -827,7 +860,7 @@ class DualPlayerCrossfadeController(
 
         scope.launch {
             val resolvedNext = try {
-                withTimeout(9_000L) { resolvePlayableMedia(nextTrack).getOrNull() }
+                withTimeout(15_000L) { resolvePlayableMedia(nextTrack).getOrNull() }
             } catch (_: TimeoutCancellationException) {
                 null
             }

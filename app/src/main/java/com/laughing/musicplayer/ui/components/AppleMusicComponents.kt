@@ -1,13 +1,23 @@
 package com.laughing.musicplayer.ui.components
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -68,9 +78,12 @@ import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.model.toAudioQualityDisplay
+import com.laughing.musicplayer.ui.theme.AppleMotion
 import com.laughing.musicplayer.ui.theme.LiquidGlassBase
 import com.laughing.musicplayer.ui.theme.LocalLiquidGlassPalette
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
+import com.laughing.musicplayer.ui.theme.applePressScale
+import com.laughing.musicplayer.ui.theme.rememberReducedMotionEnabled
 
 @Composable
 fun AppleMusicSurfaceBackground(
@@ -139,6 +152,8 @@ fun AppleCard(
     content: @Composable () -> Unit
 ) {
     val colors = LocalMusicPlayerColors.current
+    val reducedMotion = rememberReducedMotionEnabled()
+    val interactionSource = remember { MutableInteractionSource() }
     val shape = RoundedCornerShape(cornerRadius)
     val border = if (colors.themeMode == ThemeMode.LIQUID_GLASS) {
         BorderStroke(0.75.dp, colors.glassStroke)
@@ -147,7 +162,16 @@ fun AppleCard(
     } else null
 
     Surface(
-        modifier = if (onClick != null) modifier.clip(shape).clickable(onClick = onClick) else modifier,
+        modifier = if (onClick != null) {
+            modifier
+                .applePressScale(interactionSource = interactionSource, reducedMotion = reducedMotion)
+                .clip(shape)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = LocalIndication.current,
+                    onClick = onClick
+                )
+        } else modifier,
         shape = shape,
         color = colors.cardSurface,
         border = border,
@@ -346,18 +370,26 @@ fun FloatingMiniPlayer(
     onTap: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    artworkModifier: Modifier = Modifier
 ) {
     if (track == null) return
     val colors = LocalMusicPlayerColors.current
+    val reducedMotion = rememberReducedMotionEnabled()
+    val interactionSource = remember { MutableInteractionSource() }
     val shape = RoundedCornerShape(22.dp)
 
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
+            .applePressScale(interactionSource = interactionSource, reducedMotion = reducedMotion)
             .clip(shape)
-            .clickable(onClick = onTap)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                onClick = onTap
+            )
             .testTag("floating_mini_player"),
         shape = shape,
         color = if (colors.themeMode == ThemeMode.LIQUID_GLASS) {
@@ -375,38 +407,80 @@ fun FloatingMiniPlayer(
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ArtworkImage(
-                    artworkUri = track.artworkUri,
-                    contentDescription = track.title,
-                    modifier = Modifier.size(46.dp),
-                    cornerRadius = 11.dp
-                )
+                Box(modifier = Modifier.size(46.dp).then(artworkModifier)) {
+                    AnimatedContent(
+                        targetState = track.id,
+                        transitionSpec = {
+                            if (reducedMotion) {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                fadeIn(AppleMotion.mediaSpec(false)) togetherWith
+                                    fadeOut(AppleMotion.mediaSpec(false))
+                            }
+                        },
+                        label = "mini_art_change"
+                    ) { _ ->
+                        ArtworkImage(
+                            artworkUri = track.artworkUri,
+                            contentDescription = track.title,
+                            modifier = Modifier.fillMaxSize(),
+                            cornerRadius = 11.dp
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = track.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = colors.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${track.artist} • ${track.format.extension.uppercase()}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.textSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                AnimatedContent(
+                    targetState = track.id,
+                    transitionSpec = {
+                        if (reducedMotion) {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        } else {
+                            fadeIn(AppleMotion.mediaSpec(false)) togetherWith
+                                fadeOut(AppleMotion.mediaSpec(false))
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = "mini_meta_change"
+                ) { _ ->
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = track.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${track.artist} • ${track.format.extension.uppercase()}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
                 IconButton(
                     onClick = onTogglePlayPause,
                     modifier = Modifier.size(48.dp).testTag("mini_play_pause")
                 ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
-                        tint = colors.textPrimary
-                    )
+                    AnimatedContent(
+                        targetState = isPlaying,
+                        transitionSpec = {
+                            if (reducedMotion) {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                (fadeIn(AppleMotion.navSpec(false)) + scaleIn(initialScale = 0.85f)) togetherWith
+                                    (fadeOut(AppleMotion.navSpec(false)) + scaleOut(targetScale = 0.85f))
+                            }
+                        },
+                        label = "mini_play_pause_icon"
+                    ) { playing ->
+                        Icon(
+                            imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = if (playing) "Tạm dừng" else "Phát",
+                            tint = colors.textPrimary
+                        )
+                    }
                 }
                 IconButton(
                     onClick = onSkipNext,

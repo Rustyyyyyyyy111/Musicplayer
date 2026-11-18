@@ -147,6 +147,10 @@ class TelegramMusicRepository(
 
                 if (tdFile.local.isDownloadingCompleted && tdFile.local.path.isNotBlank()) {
                     val srcFile = File(tdFile.local.path)
+                    if (!storageManager.isValidAudioFile(srcFile, total)) {
+                        delay(250L)
+                        continue
+                    }
                     val mime = "audio/${track.format.extension}"
                     val probed = AudioFormatDetector.probeAudioSpecs(srcFile, track.format)
                     val embeddedArtPath = probed.embeddedArtwork?.let { bytes ->
@@ -159,7 +163,18 @@ class TelegramMusicRepository(
                     ) { srcFile.inputStream() }
 
                     if (savedPath != null) {
-                        trackDao.updateDownloadState(track.id, DownloadStatus.COMPLETED.name, 1f, savedPath)
+                        val remoteId = tdFile.remote?.id?.takeIf { it.isNotBlank() } ?: resolved.remoteFileId
+                        val uniqueId = tdFile.remote?.uniqueId?.takeIf { it.isNotBlank() } ?: resolved.remoteUniqueId
+                        trackDao.updateVerifiedLocalAudio(
+                            trackId = track.id,
+                            localPath = savedPath,
+                            status = DownloadStatus.COMPLETED.name,
+                            progress = 1f,
+                            verifiedAtMs = System.currentTimeMillis(),
+                            fileId = tdFile.id,
+                            remoteFileId = remoteId,
+                            remoteUniqueId = uniqueId
+                        )
                         trackDao.updateTrackMetadata(
                             trackId = track.id,
                             artworkUri = embeddedArtPath,

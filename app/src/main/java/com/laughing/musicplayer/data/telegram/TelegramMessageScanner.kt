@@ -4,6 +4,7 @@ import com.laughing.musicplayer.core.model.AudioFormat
 import com.laughing.musicplayer.core.model.DownloadStatus
 import com.laughing.musicplayer.core.model.GenreType
 import com.laughing.musicplayer.core.model.MusicSource
+import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.AudioFormatDetector
@@ -185,6 +186,7 @@ class TelegramMessageScanner(
             lastMsgId = chat.lastMessage?.id ?: 0L,
             ts = System.currentTimeMillis()
         )
+        repairIncompleteTracksForChat(chat.id)
         return deduplicatedChatCount
     }
 
@@ -210,6 +212,7 @@ class TelegramMessageScanner(
             lastMsgId = chat.lastMessage?.id ?: 0L,
             ts = System.currentTimeMillis()
         )
+        repairIncompleteTracksForChat(chat.id)
         return deduplicatedChatCount
     }
 
@@ -232,18 +235,25 @@ class TelegramMessageScanner(
         var totalAdded = 0
         var page = 0
 
+        var floodRetries = 0
         while (page < 60) {
-            val response = core.sendQuery(
+            val result = core.sendQuery(
                 TdApi.GetChatHistory(chat.id, fromMessageId, 0, 50, false)
-            ).getOrElse { err ->
-                if (err is TelegramCore.TdLibException && err.code == 429) {
-                    logger.log("TG_SYNC", "WARN", "Giới hạn tốc độ Telegram cho ${chat.title}, tạm nghỉ...")
-                    delay(2500L)
-                    return@getOrElse null
+            )
+            if (result.isFailure) {
+                val err = result.exceptionOrNull()
+                if (err is TelegramCore.TdLibException && (err.code == 429 || err.message.contains("FLOOD_WAIT", ignoreCase = true)) && floodRetries < 2) {
+                    floodRetries++
+                    val waitSec = Regex("(\\d+)").find(err.message)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 3L
+                    logger.log("TG_SYNC", "WARN", "Giới hạn tốc độ Telegram cho ${chat.title}, đợi ${waitSec}s...")
+                    delay((waitSec * 1000L).coerceIn(1000L, 15_000L))
+                    continue
                 }
-                logger.log("TG_SYNC", "ERROR", "Lỗi đồng bộ ${chat.title}: ${err.message}")
-                null
-            } ?: break
+                logger.log("TG_SYNC", "ERROR", "Lỗi đồng bộ ${chat.title}: ${err?.message}")
+                break
+            }
+            floodRetries = 0
+            val response = result.getOrNull() ?: break
 
             val messages = response.messages
             if (messages.isEmpty()) break
@@ -372,6 +382,8 @@ class TelegramMessageScanner(
 
                 val guessedSpecs = inferSpecsFromMeta(audio.fileName, format, bitrate)
                 val remoteFileId = audio.audio.remote?.id?.takeIf { it.isNotBlank() }
+                val remoteUniqueId = audio.audio.remote?.uniqueId?.takeIf { it.isNotBlank() }
+                val nowMs = System.currentTimeMillis()
                 val track = Track(
                     id = baseId,
                     title = rawTitle,
@@ -399,6 +411,10 @@ class TelegramMessageScanner(
                     telegramMessageId = msg.id,
                     telegramFileId = audio.audio.id,
                     telegramRemoteFileId = remoteFileId,
+                    telegramRemoteUniqueId = remoteUniqueId,
+                    mimeType = audio.mimeType?.takeIf { it.isNotBlank() },
+                    lastVerifiedAtEpochMs = if (localAudioPath != null) nowMs else 0L,
+                    telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                     telegramThreadId = effectiveThreadId,
                     telegramTopicName = topicNameOverride,
                     genre = AutoGenreClassifier.classify(
@@ -409,7 +425,7 @@ class TelegramMessageScanner(
                         sourceContext = "${topicNameOverride.orEmpty()} $chatTitle"
                     ),
                     isVoiceMessage = false,
-                    downloadStatus = if (audio.audio.local.isDownloadingCompleted) DownloadStatus.COMPLETED else DownloadStatus.NONE,
+                    downloadStatus = if (localAudioPath != null) DownloadStatus.COMPLETED else DownloadStatus.NONE,
                     localPath = localAudioPath,
                     dateAddedEpochMs = msg.date * 1000L
                 )
@@ -456,6 +472,8 @@ class TelegramMessageScanner(
                 val guessedSpecs = inferSpecsFromMeta(doc.fileName, format, bitrate)
 
                 val docRemoteFileId = doc.document.remote?.id?.takeIf { it.isNotBlank() }
+                val docRemoteUniqueId = doc.document.remote?.uniqueId?.takeIf { it.isNotBlank() }
+                val nowMs = System.currentTimeMillis()
                 val track = Track(
                     id = baseId,
                     title = title,
@@ -483,6 +501,10 @@ class TelegramMessageScanner(
                     telegramMessageId = msg.id,
                     telegramFileId = doc.document.id,
                     telegramRemoteFileId = docRemoteFileId,
+                    telegramRemoteUniqueId = docRemoteUniqueId,
+                    mimeType = doc.mimeType?.takeIf { it.isNotBlank() },
+                    lastVerifiedAtEpochMs = if (localDocPath != null) nowMs else 0L,
+                    telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                     telegramThreadId = effectiveThreadId,
                     telegramTopicName = topicNameOverride,
                     genre = AutoGenreClassifier.classify(
@@ -493,7 +515,7 @@ class TelegramMessageScanner(
                         sourceContext = "${topicNameOverride.orEmpty()} $chatTitle"
                     ),
                     isVoiceMessage = false,
-                    downloadStatus = if (doc.document.local.isDownloadingCompleted) DownloadStatus.COMPLETED else DownloadStatus.NONE,
+                    downloadStatus = if (localDocPath != null) DownloadStatus.COMPLETED else DownloadStatus.NONE,
                     localPath = localDocPath,
                     dateAddedEpochMs = msg.date * 1000L
                 )
@@ -507,6 +529,7 @@ class TelegramMessageScanner(
                 val durationMs = voice.duration * 1000L
                 val bitrate = if (durationMs > 0 && fileSize > 0) ((fileSize * 8L) / durationMs).toInt() else 64
                 val voiceRemoteFileId = voice.voice.remote?.id?.takeIf { it.isNotBlank() }
+                val voiceRemoteUniqueId = voice.voice.remote?.uniqueId?.takeIf { it.isNotBlank() }
                 ExtractedMessageResult(
                     track = Track(
                         id = baseId,
@@ -534,6 +557,9 @@ class TelegramMessageScanner(
                         telegramMessageId = msg.id,
                         telegramFileId = voice.voice.id,
                         telegramRemoteFileId = voiceRemoteFileId,
+                        telegramRemoteUniqueId = voiceRemoteUniqueId,
+                        mimeType = voice.mimeType?.takeIf { it.isNotBlank() },
+                        telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                         telegramThreadId = effectiveThreadId,
                         telegramTopicName = topicNameOverride,
                         isVoiceMessage = true,
@@ -613,6 +639,10 @@ class TelegramMessageScanner(
                     artworkUri = existingArtValid ?: track.artworkUri,
                     localPath = existingLocalValid ?: track.localPath,
                     telegramRemoteFileId = track.telegramRemoteFileId ?: existing.telegramRemoteFileId,
+                    telegramRemoteUniqueId = track.telegramRemoteUniqueId ?: existing.telegramRemoteUniqueId,
+                    mimeType = track.mimeType ?: existing.mimeType,
+                    lastVerifiedAtEpochMs = maxOf(track.lastVerifiedAtEpochMs, existing.lastVerifiedAtEpochMs),
+                    telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM,
                     downloadStatus = if (existing.downloadStatus == DownloadStatus.COMPLETED.name && existingLocalValid != null) {
                         DownloadStatus.COMPLETED
                     } else track.downloadStatus,
@@ -659,6 +689,42 @@ class TelegramMessageScanner(
                     )
                 }
             }
+        }
+    }
+
+    private suspend fun repairIncompleteTracksForChat(chatId: Long) {
+        val incomplete = runCatching { trackDao.getIncompletePersonalTracksForChat(chatId) }.getOrNull().orEmpty()
+        if (incomplete.isEmpty()) return
+        var repaired = 0
+        for (entity in incomplete.take(25)) {
+            val msgId = entity.telegramMessageId ?: continue
+            val msg = core.sendQuery(TdApi.GetMessage(chatId, msgId), timeoutMs = 5_000L).getOrNull() ?: continue
+            val audioFile = TelegramFileResolver.extractFilesFromMessage(msg)?.first ?: continue
+            val remoteId = audioFile.remote?.id?.takeIf { it.isNotBlank() }
+            val uniqueId = audioFile.remote?.uniqueId?.takeIf { it.isNotBlank() }
+            val mime = TelegramFileResolver.extractMimeTypeFromMessage(msg)
+            val rebuiltUri = TelegramFileResolver.buildStreamUri(
+                fileId = audioFile.id,
+                fileSize = maxOf(entity.fileSizeBytes, audioFile.size, audioFile.expectedSize),
+                chatId = chatId,
+                messageId = msgId,
+                remoteFileId = remoteId ?: entity.telegramRemoteFileId,
+                trackId = entity.id
+            )
+            trackDao.updateTelegramFileRef(
+                trackId = entity.id,
+                fileId = audioFile.id,
+                remoteFileId = remoteId,
+                remoteUniqueId = uniqueId,
+                mimeType = mime,
+                streamUri = rebuiltUri,
+                verifiedAtMs = System.currentTimeMillis()
+            )
+            repaired++
+            delay(80L)
+        }
+        if (repaired > 0) {
+            logger.log("TG_SYNC", "INFO", "Đã sửa $repaired bản ghi thiếu siêu dữ liệu TDLib trong chat $chatId")
         }
     }
 

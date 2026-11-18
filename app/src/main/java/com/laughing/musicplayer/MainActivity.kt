@@ -11,9 +11,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -51,6 +59,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -79,6 +88,7 @@ import com.laughing.musicplayer.ui.screens.EqualizerScreen
 import com.laughing.musicplayer.ui.screens.LibraryScreen
 import com.laughing.musicplayer.ui.screens.ListenNowScreen
 import com.laughing.musicplayer.ui.screens.NowPlayingSheet
+import com.laughing.musicplayer.ui.screens.PublicTelegramChannelsScreen
 import com.laughing.musicplayer.ui.screens.SearchScreen
 import com.laughing.musicplayer.ui.screens.SettingsScreen
 import com.laughing.musicplayer.ui.screens.TelegramAuthScreen
@@ -86,8 +96,10 @@ import com.laughing.musicplayer.ui.screens.TelegramSourcePickerScreen
 import com.laughing.musicplayer.ui.screens.TopicTracksScreen
 import com.laughing.musicplayer.ui.screens.YouTubeAuthScreen
 import com.laughing.musicplayer.ui.screens.YouTubePlaylistDetailScreen
+import com.laughing.musicplayer.ui.theme.AppleMotion
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.theme.MusicPlayerTheme
+import com.laughing.musicplayer.ui.theme.rememberReducedMotionEnabled
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 import kotlinx.serialization.Serializable
 
@@ -98,6 +110,7 @@ import kotlinx.serialization.Serializable
 @Serializable object TelegramAuthRoute
 @Serializable object YouTubeAuthRoute
 @Serializable data class TelegramSourcePickerRoute(val filterTypeName: String? = null)
+@Serializable object PublicChannelsRoute
 @Serializable data class TopicTracksRoute(val chatId: Long, val threadId: Long, val topicTitle: String)
 @Serializable data class YouTubePlaylistDetailRoute(
     val id: String,
@@ -204,122 +217,214 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
             }
         }
 
-        AppleMusicSurfaceBackground(artworkUri = playback.currentTrack?.artworkUri) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val useNavRail = maxWidth >= 600.dp && !isCarMode
+        val reducedMotion = rememberReducedMotionEnabled()
 
-                Row(modifier = Modifier.fillMaxSize()) {
-                    if (useNavRail) {
-                        NavigationRail(
-                            containerColor = colors.navBarSurface,
-                            modifier = Modifier.statusBarsPadding()
-                        ) {
-                            primaryTabs.forEach { tab ->
-                                val selected = when (tab.route) {
-                                    is ListenNowRoute -> currentDestination?.hasRoute<ListenNowRoute>() == true
-                                    is LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
-                                    is SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
-                                    is SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
-                                    else -> false
+        @OptIn(ExperimentalSharedTransitionApi::class)
+        AppleMusicSurfaceBackground(artworkUri = playback.currentTrack?.artworkUri) {
+            SharedTransitionLayout {
+                val sharedTransitionScope = this
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val useNavRail = maxWidth >= 600.dp && !isCarMode
+
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        if (useNavRail) {
+                            NavigationRail(
+                                containerColor = colors.navBarSurface,
+                                modifier = Modifier.statusBarsPadding()
+                            ) {
+                                primaryTabs.forEach { tab ->
+                                    val selected = when (tab.route) {
+                                        is ListenNowRoute -> currentDestination?.hasRoute<ListenNowRoute>() == true
+                                        is LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
+                                        is SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
+                                        is SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
+                                        else -> false
+                                    }
+                                    val iconScale by animateFloatAsState(
+                                        targetValue = if (selected && !reducedMotion) 1.08f else 1.0f,
+                                        animationSpec = tween(
+                                            durationMillis = if (reducedMotion) 0 else AppleMotion.ICON_DURATION_MS,
+                                            easing = AppleMotion.EaseOut
+                                        ),
+                                        label = "rail_icon_scale"
+                                    )
+                                    NavigationRailItem(
+                                        selected = selected,
+                                        onClick = { navigateTopTab(tab.route) },
+                                        icon = {
+                                            Icon(
+                                                tab.icon,
+                                                contentDescription = tab.label,
+                                                modifier = Modifier.scale(iconScale)
+                                            )
+                                        },
+                                        label = { Text(tab.label) },
+                                        colors = NavigationRailItemDefaults.colors(
+                                            selectedIconColor = colors.accent,
+                                            selectedTextColor = colors.accent,
+                                            unselectedIconColor = colors.textSecondary,
+                                            unselectedTextColor = colors.textSecondary,
+                                            indicatorColor = colors.accent.copy(alpha = 0.14f)
+                                        ),
+                                        modifier = Modifier.testTag(tab.testTag)
+                                    )
                                 }
-                                NavigationRailItem(
-                                    selected = selected,
-                                    onClick = { navigateTopTab(tab.route) },
-                                    icon = { Icon(tab.icon, contentDescription = tab.label) },
-                                    label = { Text(tab.label) },
-                                    colors = NavigationRailItemDefaults.colors(
-                                        selectedIconColor = colors.accent,
-                                        selectedTextColor = colors.accent,
-                                        unselectedIconColor = colors.textSecondary,
-                                        unselectedTextColor = colors.textSecondary,
-                                        indicatorColor = colors.accent.copy(alpha = 0.14f)
-                                    ),
-                                    modifier = Modifier.testTag(tab.testTag)
-                                )
                             }
                         }
-                    }
 
-                    Scaffold(
-                        modifier = Modifier.weight(1f).fillMaxSize(),
-                        containerColor = Color.Transparent,
-                        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                        snackbarHost = {
-                            SnackbarHost(
-                                hostState = snackbarHostState,
-                                modifier = Modifier.padding(bottom = if (playback.currentTrack != null) 84.dp else 12.dp)
-                            )
-                        },
-                        bottomBar = {
-                            if (!isCarMode) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .navigationBarsPadding(),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    val progress = if (playback.durationMs > 0L) {
-                                        playback.positionMs.toFloat() / playback.durationMs.toFloat()
-                                    } else 0f
+                        Scaffold(
+                            modifier = Modifier.weight(1f).fillMaxSize(),
+                            containerColor = Color.Transparent,
+                            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                            snackbarHost = {
+                                SnackbarHost(
+                                    hostState = snackbarHostState,
+                                    modifier = Modifier.padding(bottom = if (playback.currentTrack != null) 84.dp else 12.dp)
+                                )
+                            },
+                            bottomBar = {
+                                if (!isCarMode) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .navigationBarsPadding(),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        val progress = if (playback.durationMs > 0L) {
+                                            playback.positionMs.toFloat() / playback.durationMs.toFloat()
+                                        } else 0f
 
-                                    if (playback.currentTrack != null) {
-                                        FloatingMiniPlayer(
-                                            track = playback.currentTrack,
-                                            isPlaying = playback.isPlaying,
-                                            progress = progress,
-                                            onTap = { showNowPlaying = true },
-                                            onTogglePlayPause = { viewModel.togglePlayPause() },
-                                            onSkipNext = { viewModel.skipNext() },
-                                            modifier = Modifier
-                                                .widthIn(max = 680.dp)
-                                                .padding(bottom = if (useNavRail) 12.dp else 8.dp)
-                                        )
-                                    }
-
-                                    if (!useNavRail) {
-                                        NavigationBar(
-                                            containerColor = colors.navBarSurface,
-                                            tonalElevation = 0.dp
+                                        AnimatedVisibility(
+                                            visible = playback.currentTrack != null && !showNowPlaying,
+                                            enter = if (reducedMotion) {
+                                                EnterTransition.None
+                                            } else {
+                                                fadeIn(AppleMotion.navSpec(false)) +
+                                                    slideInVertically(AppleMotion.navSpec(false)) { it / 2 }
+                                            },
+                                            exit = if (reducedMotion) {
+                                                ExitTransition.None
+                                            } else {
+                                                fadeOut(AppleMotion.navSpec(false)) +
+                                                    slideOutVertically(AppleMotion.navSpec(false)) { it / 2 }
+                                            }
                                         ) {
-                                            primaryTabs.forEach { tab ->
-                                                val selected = when (tab.route) {
-                                                    is ListenNowRoute -> currentDestination?.hasRoute<ListenNowRoute>() == true
-                                                    is LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
-                                                    is SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
-                                                    is SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
-                                                    else -> false
+                                            val currentTrack = playback.currentTrack
+                                            val miniArtMod = if (currentTrack != null && !reducedMotion) {
+                                                with(sharedTransitionScope) {
+                                                    Modifier.sharedBounds(
+                                                        sharedContentState = rememberSharedContentState(
+                                                            key = "player_artwork_${currentTrack.id}"
+                                                        ),
+                                                        animatedVisibilityScope = this@AnimatedVisibility,
+                                                        boundsTransform = { _, _ -> AppleMotion.mediaSpec(false) }
+                                                    )
                                                 }
-                                                NavigationBarItem(
-                                                    selected = selected,
-                                                    onClick = { navigateTopTab(tab.route) },
-                                                    icon = { Icon(tab.icon, contentDescription = tab.label) },
-                                                    label = { Text(tab.label, maxLines = 1) },
-                                                    colors = NavigationBarItemDefaults.colors(
-                                                        selectedIconColor = colors.accent,
-                                                        selectedTextColor = colors.accent,
-                                                        unselectedIconColor = colors.textSecondary,
-                                                        unselectedTextColor = colors.textSecondary,
-                                                        indicatorColor = colors.accent.copy(alpha = 0.14f)
-                                                    ),
-                                                    modifier = Modifier.testTag(tab.testTag)
-                                                )
+                                            } else Modifier
+                                            FloatingMiniPlayer(
+                                                track = currentTrack,
+                                                isPlaying = playback.isPlaying,
+                                                progress = progress,
+                                                onTap = { showNowPlaying = true },
+                                                onTogglePlayPause = { viewModel.togglePlayPause() },
+                                                onSkipNext = { viewModel.skipNext() },
+                                                artworkModifier = miniArtMod,
+                                                modifier = Modifier
+                                                    .widthIn(max = 680.dp)
+                                                    .padding(bottom = if (useNavRail) 12.dp else 8.dp)
+                                            )
+                                        }
+
+                                        if (!useNavRail) {
+                                            NavigationBar(
+                                                containerColor = colors.navBarSurface,
+                                                tonalElevation = 0.dp
+                                            ) {
+                                                primaryTabs.forEach { tab ->
+                                                    val selected = when (tab.route) {
+                                                        is ListenNowRoute -> currentDestination?.hasRoute<ListenNowRoute>() == true
+                                                        is LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
+                                                        is SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
+                                                        is SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
+                                                        else -> false
+                                                    }
+                                                    val iconScale by animateFloatAsState(
+                                                        targetValue = if (selected && !reducedMotion) 1.08f else 1.0f,
+                                                        animationSpec = tween(
+                                                            durationMillis = if (reducedMotion) 0 else AppleMotion.ICON_DURATION_MS,
+                                                            easing = AppleMotion.EaseOut
+                                                        ),
+                                                        label = "nav_icon_scale"
+                                                    )
+                                                    NavigationBarItem(
+                                                        selected = selected,
+                                                        onClick = { navigateTopTab(tab.route) },
+                                                        icon = {
+                                                            Icon(
+                                                                tab.icon,
+                                                                contentDescription = tab.label,
+                                                                modifier = Modifier.scale(iconScale)
+                                                            )
+                                                        },
+                                                        label = { Text(tab.label, maxLines = 1) },
+                                                        colors = NavigationBarItemDefaults.colors(
+                                                            selectedIconColor = colors.accent,
+                                                            selectedTextColor = colors.accent,
+                                                            unselectedIconColor = colors.textSecondary,
+                                                            unselectedTextColor = colors.textSecondary,
+                                                            indicatorColor = colors.accent.copy(alpha = 0.14f)
+                                                        ),
+                                                        modifier = Modifier.testTag(tab.testTag)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                    ) { innerPadding ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .then(if (!isCarMode) Modifier.statusBarsPadding() else Modifier)
-                                .padding(innerPadding)
-                        ) {
-                            NavHost(
-                                navController = navController,
-                                startDestination = ListenNowRoute
+                        ) { innerPadding ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .then(if (!isCarMode) Modifier.statusBarsPadding() else Modifier)
+                                    .padding(innerPadding)
                             ) {
+                                NavHost(
+                                    navController = navController,
+                                    startDestination = ListenNowRoute,
+                                    enterTransition = {
+                                        if (reducedMotion) {
+                                            EnterTransition.None
+                                        } else {
+                                            fadeIn(AppleMotion.navSpec(false)) +
+                                                slideInHorizontally(AppleMotion.navSpec(false)) { it / 16 }
+                                        }
+                                    },
+                                    exitTransition = {
+                                        if (reducedMotion) {
+                                            ExitTransition.None
+                                        } else {
+                                            fadeOut(AppleMotion.navSpec(false)) +
+                                                slideOutHorizontally(AppleMotion.navSpec(false)) { -it / 20 }
+                                        }
+                                    },
+                                    popEnterTransition = {
+                                        if (reducedMotion) {
+                                            EnterTransition.None
+                                        } else {
+                                            fadeIn(AppleMotion.navSpec(false)) +
+                                                slideInHorizontally(AppleMotion.navSpec(false)) { -it / 16 }
+                                        }
+                                    },
+                                    popExitTransition = {
+                                        if (reducedMotion) {
+                                            ExitTransition.None
+                                        } else {
+                                            fadeOut(AppleMotion.navSpec(false)) +
+                                                slideOutHorizontally(AppleMotion.navSpec(false)) { it / 12 }
+                                        }
+                                    }
+                                ) {
                                 composable<ListenNowRoute> {
                                     ListenNowScreen(viewModel = viewModel)
                                 }
@@ -357,6 +462,9 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                         onOpenYouTubeAuth = { navController.navigate(YouTubeAuthRoute) },
                                         onOpenSourcePicker = { chatType ->
                                             navController.navigate(TelegramSourcePickerRoute(chatType?.name))
+                                        },
+                                        onOpenPublicChannels = {
+                                            navController.navigate(PublicChannelsRoute)
                                         },
                                         onOpenYouTubeSearch = {
                                             viewModel.selectSearchTab(UnifiedSearchTab.YOUTUBE_MUSIC)
@@ -403,6 +511,13 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                         onOpenTopicTracks = { chatId, threadId, title ->
                                             navController.navigate(TopicTracksRoute(chatId, threadId, title))
                                         }
+                                    )
+                                }
+
+                                composable<PublicChannelsRoute> {
+                                    PublicTelegramChannelsScreen(
+                                        viewModel = viewModel,
+                                        onBack = { navController.popBackStack() }
                                     )
                                 }
 
@@ -467,20 +582,44 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                     }
                 }
 
-                // Full-screen Now Playing Overlay
-                AnimatedVisibility(
-                    visible = showNowPlaying && playback.currentTrack != null,
-                    enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                    exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
-                ) {
-                    NowPlayingSheet(
-                        viewModel = viewModel,
-                        onDismiss = { showNowPlaying = false },
-                        onOpenEqualizer = {
-                            showNowPlaying = false
-                            navController.navigate(EqualizerRoute)
+                    // Full-screen Now Playing Overlay with shared artwork bounds transition
+                    AnimatedVisibility(
+                        visible = showNowPlaying && playback.currentTrack != null,
+                        enter = if (reducedMotion) {
+                            EnterTransition.None
+                        } else {
+                            slideInVertically(AppleMotion.mediaSpec(false)) { it / 6 } +
+                                fadeIn(AppleMotion.mediaSpec(false))
+                        },
+                        exit = if (reducedMotion) {
+                            ExitTransition.None
+                        } else {
+                            slideOutVertically(AppleMotion.mediaSpec(false)) { it / 6 } +
+                                fadeOut(AppleMotion.mediaSpec(false))
                         }
-                    )
+                    ) {
+                        val currentTrack = playback.currentTrack
+                        val sheetArtMod = if (currentTrack != null && !reducedMotion) {
+                            with(sharedTransitionScope) {
+                                Modifier.sharedBounds(
+                                    sharedContentState = rememberSharedContentState(
+                                        key = "player_artwork_${currentTrack.id}"
+                                    ),
+                                    animatedVisibilityScope = this@AnimatedVisibility,
+                                    boundsTransform = { _, _ -> AppleMotion.mediaSpec(false) }
+                                )
+                            }
+                        } else Modifier
+                        NowPlayingSheet(
+                            viewModel = viewModel,
+                            onDismiss = { showNowPlaying = false },
+                            onOpenEqualizer = {
+                                showNowPlaying = false
+                                navController.navigate(EqualizerRoute)
+                            },
+                            artworkSharedModifier = sheetArtMod
+                        )
+                    }
                 }
             }
         }

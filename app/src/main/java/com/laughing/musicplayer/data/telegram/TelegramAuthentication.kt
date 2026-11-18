@@ -62,7 +62,8 @@ sealed interface TelegramAuthUiState {
 class TelegramAuthentication(
     private val core: TelegramCore,
     private val settingsDataStore: SettingsDataStore,
-    private val logger: ActivityLogger
+    private val logger: ActivityLogger,
+    private val onPersonalLogoutCleanup: (suspend () -> Unit)? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -247,6 +248,7 @@ class TelegramAuthentication(
         core.sendQuery(TdApi.LogOut())
             .onSuccess {
                 lastSubmittedPhone = ""
+                runCatching { onPersonalLogoutCleanup?.invoke() }
                 logger.log("TG_AUTH", "INFO", "Đã đăng xuất tài khoản Telegram #${_activeAccountSlot.value}")
                 core.switchAccount(_activeAccountSlot.value)
             }

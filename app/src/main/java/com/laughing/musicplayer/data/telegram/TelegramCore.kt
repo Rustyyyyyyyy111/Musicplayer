@@ -178,10 +178,41 @@ class TelegramCore(
         if (existingHex.length == 64) {
             return existingHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         }
+        val dbDir = File(context.filesDir, "tdlib_acc_$accountSlot/db")
+        val hasExistingDb = dbDir.exists() && (dbDir.listFiles()?.isNotEmpty() == true)
+        if (credentialStore.hasSecret(prefKey) || hasExistingDb) {
+            logger.log(
+                "TG_AUTH",
+                "ERROR",
+                "Không đọc được khóa CSDL TDLib ổn định cho slot #$accountSlot; giữ nguyên khóa cũ để tránh hỏng DB."
+            )
+            // Retry reading Keystore secret once before refusing overwrite
+            val retryHex = credentialStore.getSecret(prefKey)
+            if (retryHex.length == 64) {
+                return retryHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            }
+            throw IllegalStateException("Không thể truy cập khóa mã hóa TDLib trong Android Keystore")
+        }
         val bytes = ByteArray(32)
         SecureRandom().nextBytes(bytes)
         credentialStore.putSecret(prefKey, bytes.joinToString("") { "%02x".format(it) })
         return bytes
+    }
+
+    suspend fun waitForReady(timeoutMs: Long = 7_500L): Boolean {
+        if (_authState.value is TdApi.AuthorizationStateReady) return true
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            when (_authState.value) {
+                is TdApi.AuthorizationStateReady -> return true
+                is TdApi.AuthorizationStateWaitPhoneNumber,
+                is TdApi.AuthorizationStateWaitCode,
+                is TdApi.AuthorizationStateWaitPassword,
+                is TdApi.AuthorizationStateLoggingOut -> return false
+                else -> kotlinx.coroutines.delay(120L)
+            }
+        }
+        return _authState.value is TdApi.AuthorizationStateReady
     }
 
     suspend fun applyProxy(config: ProxyConfig) {

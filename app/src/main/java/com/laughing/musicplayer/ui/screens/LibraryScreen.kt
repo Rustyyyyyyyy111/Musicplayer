@@ -25,9 +25,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -85,6 +85,7 @@ import com.laughing.musicplayer.core.model.GenreType
 import com.laughing.musicplayer.core.model.LibraryCategory
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.SmartPlaylistType
+import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.laughing.musicplayer.ui.components.AppleCard
@@ -114,6 +115,7 @@ fun LibraryScreen(
     val context = LocalContext.current
     val colors = LocalMusicPlayerColors.current
     val selectedSource by viewModel.selectedLibrarySource.collectAsStateWithLifecycle()
+    val selectedTelegramOrigin by viewModel.selectedTelegramOrigin.collectAsStateWithLifecycle()
     val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
     val downloaded by viewModel.downloadedTracks.collectAsStateWithLifecycle()
@@ -132,13 +134,9 @@ fun LibraryScreen(
     var ytCategory by rememberSaveable { mutableStateOf(LibraryTabOption.ALL_SONGS) }
     var offCategory by rememberSaveable { mutableStateOf(LibraryTabOption.ALL_SONGS) }
 
-    val listStates = remember {
-        mapOf(
-            MusicSource.TELEGRAM to LazyListState(),
-            MusicSource.YOUTUBE_MUSIC to LazyListState(),
-            MusicSource.OFFLINE to LazyListState()
-        )
-    }
+    val tgListState = rememberLazyListState()
+    val ytListState = rememberLazyListState()
+    val offListState = rememberLazyListState()
 
     var selectedArtistGroup by remember { mutableStateOf<ArtistGroup?>(null) }
     var selectedGenre by remember { mutableStateOf<GenreType?>(null) }
@@ -209,8 +207,13 @@ fun LibraryScreen(
         }
     }
 
-    val sourceTracks = remember(allTracks, selectedSource) {
-        allTracks.filter { it.source == selectedSource }
+    val sourceTracks = remember(allTracks, selectedSource, selectedTelegramOrigin) {
+        allTracks.filter { track ->
+            track.source == selectedSource &&
+                (selectedSource != MusicSource.TELEGRAM ||
+                    selectedTelegramOrigin == null ||
+                    track.telegramOrigin == selectedTelegramOrigin)
+        }
     }
 
     val localSearchQuery = localSearchValue.text.trim()
@@ -378,6 +381,53 @@ fun LibraryScreen(
                         )
                     }
                 }
+
+                if (selectedSource == MusicSource.TELEGRAM) {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.testTag("telegram_origin_filter_row")
+                    ) {
+                        item(key = "tg_origin_all") {
+                            FilterChip(
+                                selected = selectedTelegramOrigin == null,
+                                onClick = { viewModel.selectTelegramOrigin(null) },
+                                label = { Text("Tất cả") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = colors.accent.copy(alpha = 0.88f),
+                                    selectedLabelColor = Color.White,
+                                    labelColor = colors.textPrimary
+                                ),
+                                modifier = Modifier.testTag("tg_origin_all")
+                            )
+                        }
+                        item(key = "tg_origin_personal") {
+                            FilterChip(
+                                selected = selectedTelegramOrigin == TelegramOrigin.PERSONAL_TELEGRAM,
+                                onClick = { viewModel.selectTelegramOrigin(TelegramOrigin.PERSONAL_TELEGRAM) },
+                                label = { Text("Telegram cá nhân") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = colors.accent.copy(alpha = 0.88f),
+                                    selectedLabelColor = Color.White,
+                                    labelColor = colors.textPrimary
+                                ),
+                                modifier = Modifier.testTag("tg_origin_personal")
+                            )
+                        }
+                        item(key = "tg_origin_public") {
+                            FilterChip(
+                                selected = selectedTelegramOrigin == TelegramOrigin.PUBLIC_TELEGRAM,
+                                onClick = { viewModel.selectTelegramOrigin(TelegramOrigin.PUBLIC_TELEGRAM) },
+                                label = { Text("Kênh công khai") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = colors.accent.copy(alpha = 0.88f),
+                                    selectedLabelColor = Color.White,
+                                    labelColor = colors.textPrimary
+                                ),
+                                modifier = Modifier.testTag("tg_origin_public")
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -409,7 +459,11 @@ fun LibraryScreen(
             }
         }
 
-        val activeListState = listStates[selectedSource] ?: LazyListState()
+        val activeListState = when (selectedSource) {
+            MusicSource.TELEGRAM -> tgListState
+            MusicSource.YOUTUBE_MUSIC -> ytListState
+            MusicSource.OFFLINE -> offListState
+        }
         LazyColumn(
             state = activeListState,
             modifier = Modifier
@@ -483,7 +537,8 @@ fun LibraryScreen(
                             onDownload = { viewModel.downloadTrack(track) },
                             onAddToQueue = { viewModel.addToQueueNext(track) },
                             onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
-                            onEditGenre = { editingGenreTrack = track }
+                            onEditGenre = { editingGenreTrack = track },
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }
@@ -593,7 +648,8 @@ fun LibraryScreen(
                                     onDownload = { viewModel.downloadTrack(track) },
                                     onAddToQueue = { viewModel.addToQueueNext(track) },
                                     onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
-                                    onEditGenre = { editingGenreTrack = track }
+                                    onEditGenre = { editingGenreTrack = track },
+                                    modifier = Modifier.animateItem()
                                 )
                             }
                         }

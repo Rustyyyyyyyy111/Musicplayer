@@ -316,7 +316,8 @@ fun SearchScreen(
                                     track = track,
                                     currentTrackId = playback.currentTrack?.id,
                                     queueContext = exploreState.moodTracks,
-                                    viewModel = viewModel
+                                    viewModel = viewModel,
+                                    modifier = Modifier.animateItem()
                                 )
                             }
                         }
@@ -382,7 +383,8 @@ fun SearchScreen(
                                 track = track,
                                 currentTrackId = playback.currentTrack?.id,
                                 queueContext = exploreState.chartTracks,
-                                viewModel = viewModel
+                                viewModel = viewModel,
+                                modifier = Modifier.animateItem()
                             )
                         }
                     }
@@ -402,7 +404,8 @@ fun SearchScreen(
                                 track = track,
                                 currentTrackId = playback.currentTrack?.id,
                                 queueContext = exploreState.trendingTracks,
-                                viewModel = viewModel
+                                viewModel = viewModel,
+                                modifier = Modifier.animateItem()
                             )
                         }
                     }
@@ -427,7 +430,8 @@ fun SearchScreen(
                             track = track,
                             currentTrackId = playback.currentTrack?.id,
                             queueContext = searchState.offlineResults,
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }
@@ -444,7 +448,8 @@ fun SearchScreen(
                             track = track,
                             currentTrackId = playback.currentTrack?.id,
                             queueContext = searchState.telegramResults,
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }
@@ -484,7 +489,8 @@ fun SearchScreen(
                                 track = track,
                                 currentTrackId = playback.currentTrack?.id,
                                 queueContext = searchState.youtubeTracks,
-                                viewModel = viewModel
+                                viewModel = viewModel,
+                                modifier = Modifier.animateItem()
                             )
                         }
                     }
@@ -714,7 +720,8 @@ private fun UnifiedTrackRow(
     track: Track,
     currentTrackId: String?,
     queueContext: List<Track>,
-    viewModel: MusicPlayerViewModel
+    viewModel: MusicPlayerViewModel,
+    modifier: Modifier = Modifier
 ) {
     TrackRowItem(
         track = track,
@@ -723,6 +730,7 @@ private fun UnifiedTrackRow(
         onToggleFavorite = { viewModel.toggleFavorite(track) },
         onDownload = { viewModel.downloadTrack(track) },
         onAddToQueue = { viewModel.addToQueueNext(track) },
-        onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) }
+        onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
+        modifier = modifier
     )
 }

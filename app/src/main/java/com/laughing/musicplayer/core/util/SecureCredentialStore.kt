@@ -50,6 +50,8 @@ class SecureCredentialStore(context: Context) {
         }
     }
 
+    fun hasSecret(key: String): Boolean = !prefs.getString(key, null).isNullOrEmpty()
+
     fun getSecret(key: String): String {
         val encoded = prefs.getString(key, null) ?: return ""
         return runCatching {

@@ -17,9 +17,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PlaylistTrackCrossRef::class,
         DownloadTaskEntity::class,
         CacheEntryEntity::class,
-        ActivityLogEntity::class
+        ActivityLogEntity::class,
+        PublicChannelEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class MusicPlayerDatabase : RoomDatabase() {
@@ -28,6 +29,7 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun downloadCacheDao(): DownloadCacheDao
     abstract fun activityLogDao(): ActivityLogDao
+    abstract fun publicChannelDao(): PublicChannelDao
 
     companion object {
         @Volatile
@@ -81,6 +83,36 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tracks ADD COLUMN telegramRemoteUniqueId TEXT")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN mimeType TEXT")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN lastVerifiedAtEpochMs INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN telegramOrigin TEXT NOT NULL DEFAULT 'PERSONAL_TELEGRAM'")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN publicChannelUsername TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tracks_telegramOrigin ON tracks(telegramOrigin)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tracks_publicChannelUsername ON tracks(publicChannelUsername)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `public_channels` (
+                        `channelKey` TEXT NOT NULL,
+                        `channelId` INTEGER,
+                        `username` TEXT NOT NULL,
+                        `displayTitle` TEXT NOT NULL,
+                        `avatarUrl` TEXT,
+                        `discoveredCount` INTEGER NOT NULL DEFAULT 0,
+                        `lastSyncedEpochMs` INTEGER NOT NULL DEFAULT 0,
+                        `syncStatus` TEXT NOT NULL DEFAULT 'IDLE',
+                        `isPaused` INTEGER NOT NULL DEFAULT 0,
+                        `lastCursor` TEXT,
+                        `lastError` TEXT,
+                        PRIMARY KEY(`channelKey`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): MusicPlayerDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -88,7 +120,7 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
                     MusicPlayerDatabase::class.java,
                     "music_player.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

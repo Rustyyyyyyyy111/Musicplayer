@@ -227,6 +227,64 @@ class UnifiedStorageManager(
         return ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
     }
 
+    fun getPersistentTelegramAudioCacheDir(): File {
+        return File(File(context.filesDir, "music_cache"), "telegram").apply {
+            if (!exists()) mkdirs()
+        }
+    }
+
+    fun getPersistentPublicAudioCacheDir(): File {
+        return File(File(context.filesDir, "music_cache"), "public_telegram").apply {
+            if (!exists()) mkdirs()
+        }
+    }
+
+    fun isValidAudioFile(file: File?, expectedSizeBytes: Long = 0L): Boolean {
+        if (file == null || !file.exists() || !file.isFile || !file.canRead()) return false
+        val len = file.length()
+        if (len <= 1024L) return false
+        if (expectedSizeBytes > 4096L && len < (expectedSizeBytes * 85L) / 100L) {
+            return false
+        }
+        return true
+    }
+
+    suspend fun copyFileToPersistentAudioCache(
+        sourceFile: File,
+        targetDir: File,
+        targetFileName: String,
+        expectedSizeBytes: Long = 0L
+    ): File? = withContext(Dispatchers.IO) {
+        if (!isValidAudioFile(sourceFile, expectedSizeBytes)) return@withContext null
+        targetDir.mkdirs()
+        val safeName = sanitizeFileName(targetFileName)
+        val destFile = File(targetDir, safeName)
+        if (destFile.absolutePath == sourceFile.absolutePath && isValidAudioFile(destFile, expectedSizeBytes)) {
+            return@withContext destFile
+        }
+        val partFile = File(targetDir, "$safeName.part")
+        runCatching {
+            sourceFile.inputStream().use { input ->
+                FileOutputStream(partFile).use { output ->
+                    input.copyTo(output)
+                    output.fd.sync()
+                }
+            }
+            if (!isValidAudioFile(partFile, expectedSizeBytes)) {
+                partFile.delete()
+                return@runCatching null
+            }
+            if (destFile.exists()) destFile.delete()
+            if (!partFile.renameTo(destFile)) {
+                partFile.copyTo(destFile, overwrite = true)
+                partFile.delete()
+            }
+            if (isValidAudioFile(destFile, expectedSizeBytes)) destFile else null
+        }.onFailure {
+            partFile.delete()
+        }.getOrNull()
+    }
+
     fun sanitizeFileName(raw: String): String {
         return raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifEmpty { "audio_${System.currentTimeMillis()}" }
     }

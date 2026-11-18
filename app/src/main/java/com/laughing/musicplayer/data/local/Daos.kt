@@ -42,20 +42,51 @@ interface TrackDao {
         UPDATE tracks SET
             telegramFileId = :fileId,
             telegramRemoteFileId = COALESCE(NULLIF(:remoteFileId, ''), telegramRemoteFileId),
-            streamUri = :streamUri
+            telegramRemoteUniqueId = COALESCE(NULLIF(:remoteUniqueId, ''), telegramRemoteUniqueId),
+            mimeType = COALESCE(NULLIF(:mimeType, ''), mimeType),
+            streamUri = :streamUri,
+            lastVerifiedAtEpochMs = CASE WHEN :verifiedAtMs > 0 THEN :verifiedAtMs ELSE lastVerifiedAtEpochMs END
         WHERE id = :trackId
     """)
     suspend fun updateTelegramFileRef(
         trackId: String,
         fileId: Int,
         remoteFileId: String?,
-        streamUri: String
+        remoteUniqueId: String? = null,
+        mimeType: String? = null,
+        streamUri: String,
+        verifiedAtMs: Long = 0L
+    )
+
+    @Query("""
+        UPDATE tracks SET
+            localPath = :localPath,
+            downloadStatus = :status,
+            downloadProgress = :progress,
+            lastVerifiedAtEpochMs = :verifiedAtMs,
+            telegramFileId = CASE WHEN :fileId > 0 THEN :fileId ELSE telegramFileId END,
+            telegramRemoteFileId = COALESCE(NULLIF(:remoteFileId, ''), telegramRemoteFileId),
+            telegramRemoteUniqueId = COALESCE(NULLIF(:remoteUniqueId, ''), telegramRemoteUniqueId),
+            streamUri = COALESCE(NULLIF(:streamUri, ''), streamUri)
+        WHERE id = :trackId
+    """)
+    suspend fun updateVerifiedLocalAudio(
+        trackId: String,
+        localPath: String,
+        status: String,
+        progress: Float,
+        verifiedAtMs: Long,
+        fileId: Int = 0,
+        remoteFileId: String? = null,
+        remoteUniqueId: String? = null,
+        streamUri: String? = null
     )
 
     @Query("""
         SELECT COUNT(DISTINCT telegramMessageId) FROM tracks
         WHERE telegramChatId = :chatId
           AND source = 'TELEGRAM'
+          AND telegramOrigin = 'PERSONAL_TELEGRAM'
           AND telegramMessageId IS NOT NULL
     """)
     suspend fun countDistinctTelegramTracksForChat(chatId: Long): Int
@@ -65,9 +96,36 @@ interface TrackDao {
         WHERE telegramChatId = :chatId
           AND telegramThreadId = :threadId
           AND source = 'TELEGRAM'
+          AND telegramOrigin = 'PERSONAL_TELEGRAM'
           AND telegramMessageId IS NOT NULL
     """)
     suspend fun countDistinctTelegramTracksForTopic(chatId: Long, threadId: Long): Int
+
+    @Query("""
+        SELECT COUNT(*) FROM tracks
+        WHERE source = 'TELEGRAM'
+          AND telegramOrigin = 'PUBLIC_TELEGRAM'
+          AND publicChannelUsername = :username
+    """)
+    suspend fun countPublicTracksForChannel(username: String): Int
+
+    @Query("DELETE FROM tracks WHERE source = 'TELEGRAM' AND telegramOrigin = 'PERSONAL_TELEGRAM'")
+    suspend fun deletePersonalTelegramTracks()
+
+    @Query("DELETE FROM tracks WHERE source = 'TELEGRAM' AND telegramOrigin = 'PUBLIC_TELEGRAM' AND publicChannelUsername = :username")
+    suspend fun deleteTracksForPublicChannel(username: String)
+
+    @Query("SELECT * FROM tracks WHERE source = 'TELEGRAM' AND telegramOrigin = 'PUBLIC_TELEGRAM' AND publicChannelUsername = :username ORDER BY telegramMessageId DESC, dateAddedEpochMs DESC")
+    fun observeTracksForPublicChannel(username: String): Flow<List<TrackEntity>>
+
+    @Query("""
+        SELECT * FROM tracks
+        WHERE source = 'TELEGRAM'
+          AND telegramOrigin = 'PERSONAL_TELEGRAM'
+          AND telegramChatId = :chatId
+          AND (telegramRemoteFileId IS NULL OR telegramRemoteFileId = '' OR telegramRemoteUniqueId IS NULL OR telegramRemoteUniqueId = '')
+    """)
+    suspend fun getIncompletePersonalTracksForChat(chatId: Long): List<TrackEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTracks(tracks: List<TrackEntity>)
@@ -180,6 +238,15 @@ interface TelegramDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCheckpoint(checkpoint: SyncCheckpointEntity)
+
+    @Query("DELETE FROM telegram_sources")
+    suspend fun clearAllSources()
+
+    @Query("DELETE FROM forum_topics")
+    suspend fun clearAllTopics()
+
+    @Query("DELETE FROM sync_checkpoints")
+    suspend fun clearAllCheckpoints()
 }
 
 @Dao
@@ -266,4 +333,43 @@ interface ActivityLogDao {
 
     @Query("DELETE FROM activity_logs")
     suspend fun clearLogs()
+}
+
+@Dao
+interface PublicChannelDao {
+    @Query("SELECT * FROM public_channels ORDER BY lastSyncedEpochMs DESC, displayTitle ASC")
+    fun observePublicChannels(): Flow<List<PublicChannelEntity>>
+
+    @Query("SELECT * FROM public_channels ORDER BY lastSyncedEpochMs DESC, displayTitle ASC")
+    suspend fun getPublicChannelsOnce(): List<PublicChannelEntity>
+
+    @Query("SELECT * FROM public_channels WHERE channelKey = :channelKey LIMIT 1")
+    suspend fun getChannel(channelKey: String): PublicChannelEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertChannel(channel: PublicChannelEntity)
+
+    @Query("UPDATE public_channels SET isPaused = :paused, syncStatus = :status WHERE channelKey = :channelKey")
+    suspend fun setPaused(channelKey: String, paused: Boolean, status: String)
+
+    @Query("""
+        UPDATE public_channels SET
+            syncStatus = :status,
+            discoveredCount = :discoveredCount,
+            lastSyncedEpochMs = CASE WHEN :lastSyncedEpochMs > 0 THEN :lastSyncedEpochMs ELSE lastSyncedEpochMs END,
+            lastCursor = COALESCE(:cursor, lastCursor),
+            lastError = :error
+        WHERE channelKey = :channelKey
+    """)
+    suspend fun updateSyncState(
+        channelKey: String,
+        status: String,
+        discoveredCount: Int,
+        lastSyncedEpochMs: Long,
+        cursor: String?,
+        error: String?
+    )
+
+    @Query("DELETE FROM public_channels WHERE channelKey = :channelKey")
+    suspend fun deleteChannel(channelKey: String)
 }

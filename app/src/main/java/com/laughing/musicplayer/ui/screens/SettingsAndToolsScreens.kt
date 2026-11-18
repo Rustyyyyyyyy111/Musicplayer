@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
@@ -112,6 +113,7 @@ fun SettingsScreen(
     onOpenTelegramAuth: () -> Unit,
     onOpenYouTubeAuth: () -> Unit,
     onOpenSourcePicker: (TelegramChatType?) -> Unit,
+    onOpenPublicChannels: () -> Unit = {},
     onOpenYouTubeSearch: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenCarMode: () -> Unit,
@@ -253,6 +255,14 @@ fun SettingsScreen(
                             if (!isScanningTg) viewModel.scanSelectedTelegramSources()
                         },
                         testTag = "setting_tg_sync_now"
+                    )
+                    SettingsDivider()
+                    SettingsNavRow(
+                        icon = Icons.Filled.Public,
+                        title = "Kênh Telegram công khai",
+                        subtitle = "Không cần đăng nhập cá nhân • Backend / Bot API",
+                        onClick = onOpenPublicChannels,
+                        testTag = "setting_public_tg_channels"
                     )
                     SettingsDivider()
                     Row(

@@ -99,7 +99,8 @@ fun ListenNowScreen(viewModel: MusicPlayerViewModel) {
                     onToggleFavorite = { viewModel.toggleFavorite(track) },
                     onDownload = { viewModel.downloadTrack(track) },
                     onAddToQueue = { viewModel.addToQueueNext(track) },
-                    onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) }
+                    onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
+                    modifier = Modifier.animateItem()
                 )
             }
         } else {

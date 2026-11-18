@@ -1,10 +1,20 @@
 package com.laughing.musicplayer.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,9 +92,12 @@ import com.laughing.musicplayer.core.model.SleepTimerMode
 import com.laughing.musicplayer.ui.components.ArtworkImage
 import com.laughing.musicplayer.ui.components.AudioQualityBadge
 import com.laughing.musicplayer.ui.components.formatDurationMs
+import com.laughing.musicplayer.ui.theme.AppleMotion
 import com.laughing.musicplayer.ui.theme.LiquidGlassBase
 import com.laughing.musicplayer.ui.theme.LocalLiquidGlassPalette
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
+import com.laughing.musicplayer.ui.theme.applePressScale
+import com.laughing.musicplayer.ui.theme.rememberReducedMotionEnabled
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -92,12 +105,14 @@ import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 fun NowPlayingSheet(
     viewModel: MusicPlayerViewModel,
     onDismiss: () -> Unit,
-    onOpenEqualizer: () -> Unit
+    onOpenEqualizer: () -> Unit,
+    artworkSharedModifier: Modifier = Modifier
 ) {
     BackHandler { onDismiss() }
 
     val colors = LocalMusicPlayerColors.current
     val palette = LocalLiquidGlassPalette.current
+    val reducedMotion = rememberReducedMotionEnabled()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
     val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
     val track = playback.currentTrack ?: return
@@ -108,8 +123,8 @@ fun NowPlayingSheet(
     var showLyricsSearchDialog by remember { mutableStateOf(false) }
 
     val artworkScale by animateFloatAsState(
-        targetValue = if (playback.isPlaying) 1.0f else 0.90f,
-        animationSpec = spring(dampingRatio = 0.72f),
+        targetValue = if (reducedMotion || playback.isPlaying) 1.0f else 0.90f,
+        animationSpec = if (reducedMotion) AppleMotion.mediaSpec(true) else spring(dampingRatio = 0.72f),
         label = "art_scale"
     )
 
@@ -221,17 +236,31 @@ fun NowPlayingSheet(
                     Surface(
                         modifier = Modifier
                             .size(300.dp)
+                            .then(artworkSharedModifier)
                             .scale(artworkScale),
                         shape = RoundedCornerShape(24.dp),
                         shadowElevation = if (playback.isPlaying) 22.dp else 10.dp,
                         color = Color.Transparent
                     ) {
-                        ArtworkImage(
-                            artworkUri = track.artworkUri,
-                            contentDescription = track.title,
-                            modifier = Modifier.fillMaxSize(),
-                            cornerRadius = 24.dp
-                        )
+                        AnimatedContent(
+                            targetState = track.id,
+                            transitionSpec = {
+                                if (reducedMotion) {
+                                    EnterTransition.None togetherWith ExitTransition.None
+                                } else {
+                                    fadeIn(AppleMotion.mediaSpec(false)) togetherWith
+                                        fadeOut(AppleMotion.mediaSpec(false))
+                                }
+                            },
+                            label = "now_playing_artwork"
+                        ) { _ ->
+                            ArtworkImage(
+                                artworkUri = track.artworkUri,
+                                contentDescription = track.title,
+                                modifier = Modifier.fillMaxSize(),
+                                cornerRadius = 24.dp
+                            )
+                        }
                     }
                 }
             } else {
@@ -330,21 +359,35 @@ fun NowPlayingSheet(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = track.title,
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = listOfNotNull(track.artist, track.telegramTopicName).distinct().joinToString(" • "),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White.copy(alpha = 0.80f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                    AnimatedContent(
+                        targetState = track.id,
+                        transitionSpec = {
+                            if (reducedMotion) {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                fadeIn(AppleMotion.mediaSpec(false)) togetherWith
+                                    fadeOut(AppleMotion.mediaSpec(false))
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        label = "now_playing_meta"
+                    ) { _ ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = track.title,
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = listOfNotNull(track.artist, track.telegramTopicName).distinct().joinToString(" • "),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Color.White.copy(alpha = 0.80f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                     if (track.source != MusicSource.OFFLINE && track.downloadStatus != DownloadStatus.COMPLETED) {
                         IconButton(onClick = { viewModel.downloadTrack(track) }) {
@@ -424,22 +467,40 @@ fun NowPlayingSheet(
                     IconButton(onClick = { viewModel.skipPrevious() }, modifier = Modifier.size(56.dp)) {
                         Icon(Icons.Filled.SkipPrevious, contentDescription = "Bài trước", tint = Color.White, modifier = Modifier.size(38.dp))
                     }
+                    val playBtnInteraction = remember { MutableInteractionSource() }
                     Surface(
                         modifier = Modifier
                             .size(72.dp)
+                            .applePressScale(playBtnInteraction, reducedMotion = reducedMotion, targetScale = 0.94f)
                             .clip(CircleShape)
-                            .clickable { viewModel.togglePlayPause() }
+                            .clickable(
+                                interactionSource = playBtnInteraction,
+                                indication = LocalIndication.current
+                            ) { viewModel.togglePlayPause() }
                             .testTag("now_playing_play_pause"),
                         shape = CircleShape,
                         color = Color.White
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = if (playback.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                contentDescription = if (playback.isPlaying) "Tạm dừng" else "Phát",
-                                tint = Color.Black,
-                                modifier = Modifier.size(40.dp)
-                            )
+                            AnimatedContent(
+                                targetState = playback.isPlaying,
+                                transitionSpec = {
+                                    if (reducedMotion) {
+                                        EnterTransition.None togetherWith ExitTransition.None
+                                    } else {
+                                        (fadeIn(AppleMotion.navSpec(false)) + scaleIn(initialScale = 0.84f)) togetherWith
+                                            (fadeOut(AppleMotion.navSpec(false)) + scaleOut(targetScale = 0.84f))
+                                    }
+                                },
+                                label = "now_playing_play_pause_icon"
+                            ) { playing ->
+                                Icon(
+                                    imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = if (playing) "Tạm dừng" else "Phát",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                            }
                         }
                     }
                     IconButton(onClick = { viewModel.skipNext() }, modifier = Modifier.size(56.dp)) {

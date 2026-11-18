@@ -18,8 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
+import com.laughing.musicplayer.core.model.PublicChannelAccessMode
 import com.laughing.musicplayer.core.model.SleepTimerMode
 import com.laughing.musicplayer.core.model.SmartPlaylistType
+import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.SecureCredentialStore
 import com.laughing.musicplayer.data.local.CacheEntryEntity
@@ -30,9 +32,16 @@ import com.laughing.musicplayer.data.storage.CacheManager
 import com.laughing.musicplayer.data.storage.UnifiedStorageManager
 import com.laughing.musicplayer.integrations.PlaylistAndSmartMixManager
 import com.laughing.musicplayer.lyrics.LyricsEngine
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -934,5 +943,523 @@ class ExampleRobolectricTest {
             "Bỏ chọn label must stay horizontal (width=${deselectTextBounds.width}, height=${deselectTextBounds.height})",
             deselectTextBounds.width > deselectTextBounds.height
         )
+    }
+
+    @Test
+    fun telegramFileResolverEnsureVerifiedLocalAudioFileRecoversViaGetMessageAndUpdateFile() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val memDb = Room.inMemoryDatabaseBuilder(context, MusicPlayerDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+            val logger = ActivityLogger(memDb.activityLogDao())
+            val settings = SettingsDataStore(context, SecureCredentialStore(context))
+            val storage = UnifiedStorageManager(context, settings, logger)
+
+            val tdDownloadDir = File(context.cacheDir, "fake_td_files").apply { mkdirs() }
+            val validMp3Bytes = byteArrayOf(0x49, 0x44, 0x33, 0x03, 0x00, 0x00) + ByteArray(2048) { 0x55 }
+            val downloadedTempFile = File(tdDownloadDir, "recovered_777.mp3").apply {
+                writeBytes(validMp3Bytes)
+            }
+
+            val staleEntity = TrackEntity(
+                id = "tg_77_9001",
+                title = "Lossless Restart Test",
+                artist = "Artist",
+                album = "Channel",
+                source = "TELEGRAM",
+                telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM.name,
+                durationMs = 180_000L,
+                format = "MP3",
+                bitrateKbps = 320,
+                sampleRateHz = 44100,
+                bitDepth = null,
+                fileSizeBytes = validMp3Bytes.size.toLong(),
+                fileHash = null,
+                fileName = "recovered_777.mp3",
+                artworkUri = null,
+                streamUri = "tg://file/999?size=${validMp3Bytes.size}",
+                localPath = "/nonexistent/deleted_after_force_stop.mp3",
+                telegramChatId = 77L,
+                telegramChatTitle = "Channel",
+                telegramMessageId = 9001L,
+                telegramFileId = 999,
+                telegramRemoteFileId = "stale_remote_999",
+                telegramRemoteUniqueId = "uniq_old",
+                telegramThreadId = null,
+                telegramTopicName = null,
+                youtubeVideoId = null,
+                genre = "POP",
+                genreManuallyEdited = false,
+                isVoiceMessage = false,
+                mimeType = "audio/mpeg",
+                downloadStatus = "NONE",
+                downloadProgress = 0f,
+                lastVerifiedAtEpochMs = 0L,
+                isFavorite = false,
+                dateAddedEpochMs = 1_000L,
+                lastPlayedEpochMs = 0L,
+                playCount = 0,
+                loudnessGainDb = 0f,
+                bpm = 0,
+                normalizedSearchBlob = "lossless restart test"
+            )
+            val missingMessageEntity = staleEntity.copy(
+                id = "tg_77_9002",
+                title = "Deleted Message Track",
+                telegramMessageId = 9002L,
+                telegramFileId = 1002,
+                telegramRemoteFileId = null
+            )
+            memDb.trackDao().upsertTracks(listOf(staleEntity, missingMessageEntity))
+
+            val updatesFlow = MutableSharedFlow<org.drinkless.tdlib.TdApi.File>(extraBufferCapacity = 8)
+            val fakeClient = object : com.laughing.musicplayer.data.telegram.TelegramFileClient {
+                override suspend fun getFile(fileId: Int, timeoutMs: Long): Result<org.drinkless.tdlib.TdApi.File> {
+                    return if (fileId == 7701) {
+                        Result.success(
+                            org.drinkless.tdlib.TdApi.File().apply {
+                                id = 7701
+                                size = validMp3Bytes.size.toLong()
+                                remote = org.drinkless.tdlib.TdApi.RemoteFile().apply {
+                                    id = "fresh_remote_7701"
+                                    uniqueId = "fresh_unique_7701"
+                                }
+                                local = org.drinkless.tdlib.TdApi.LocalFile().apply {
+                                    path = downloadedTempFile.absolutePath
+                                    downloadedSize = validMp3Bytes.size.toLong()
+                                    isDownloadingCompleted = true
+                                }
+                            }
+                        )
+                    } else {
+                        Result.failure(IllegalStateException("File not found #$fileId"))
+                    }
+                }
+
+                override suspend fun getRemoteFile(
+                    remoteFileId: String,
+                    fileType: org.drinkless.tdlib.TdApi.FileType,
+                    timeoutMs: Long
+                ): Result<org.drinkless.tdlib.TdApi.File> =
+                    Result.failure(IllegalStateException("Remote file expired"))
+
+                override suspend fun getMessage(
+                    chatId: Long,
+                    messageId: Long,
+                    timeoutMs: Long
+                ): Result<org.drinkless.tdlib.TdApi.Message> {
+                    if (chatId == 77L && messageId == 9001L) {
+                        val audio = org.drinkless.tdlib.TdApi.Audio().apply {
+                            this.audio = org.drinkless.tdlib.TdApi.File().apply {
+                                id = 7701
+                                size = validMp3Bytes.size.toLong()
+                                remote = org.drinkless.tdlib.TdApi.RemoteFile().apply {
+                                    id = "fresh_remote_7701"
+                                    uniqueId = "fresh_unique_7701"
+                                }
+                                local = org.drinkless.tdlib.TdApi.LocalFile()
+                            }
+                        }
+                        return Result.success(
+                            org.drinkless.tdlib.TdApi.Message().apply {
+                                id = 9001L
+                                this.chatId = 77L
+                                content = org.drinkless.tdlib.TdApi.MessageAudio().apply { this.audio = audio }
+                            }
+                        )
+                    }
+                    return Result.failure(IllegalStateException("Message not found (404)"))
+                }
+
+                override suspend fun downloadFile(
+                    fileId: Int,
+                    priority: Int,
+                    offset: Long,
+                    limit: Long,
+                    synchronous: Boolean,
+                    timeoutMs: Long
+                ): Result<org.drinkless.tdlib.TdApi.File> {
+                    if (fileId == 7701) {
+                        return Result.success(
+                            org.drinkless.tdlib.TdApi.File().apply {
+                                id = 7701
+                                size = validMp3Bytes.size.toLong()
+                                remote = org.drinkless.tdlib.TdApi.RemoteFile().apply {
+                                    id = "fresh_remote_7701"
+                                    uniqueId = "fresh_unique_7701"
+                                }
+                                local = org.drinkless.tdlib.TdApi.LocalFile().apply {
+                                    downloadedSize = 512L
+                                    isDownloadingCompleted = false
+                                }
+                            }
+                        )
+                    }
+                    return Result.failure(IllegalStateException("Download failed #$fileId"))
+                }
+            }
+
+            val resolver = com.laughing.musicplayer.data.telegram.TelegramFileResolver(
+                client = fakeClient,
+                trackDao = memDb.trackDao(),
+                storageManager = storage,
+                logger = logger,
+                fileUpdates = updatesFlow,
+                waitForReady = { true }
+            )
+
+            // Emit TDLib UpdateFile completion shortly after download starts
+            val emitterJob = launch {
+                delay(80L)
+                updatesFlow.emit(
+                    org.drinkless.tdlib.TdApi.File().apply {
+                        id = 7701
+                        size = validMp3Bytes.size.toLong()
+                        remote = org.drinkless.tdlib.TdApi.RemoteFile().apply {
+                            id = "fresh_remote_7701"
+                            uniqueId = "fresh_unique_7701"
+                        }
+                        local = org.drinkless.tdlib.TdApi.LocalFile().apply {
+                            path = downloadedTempFile.absolutePath
+                            downloadedSize = validMp3Bytes.size.toLong()
+                            isDownloadingCompleted = true
+                        }
+                    }
+                )
+            }
+
+            val verifiedResult = resolver.ensureVerifiedLocalAudioFile(staleEntity.toDomain())
+            emitterJob.cancel()
+
+            assertTrue("Should recover and persist verified local audio", verifiedResult.isSuccess)
+            val verifiedTrack = verifiedResult.getOrThrow()
+            assertNotNull(verifiedTrack.localPath)
+            assertTrue(File(verifiedTrack.localPath!!).exists())
+            assertTrue(
+                "Must copy into persistent cache dir",
+                verifiedTrack.localPath!!.contains("music_cache")
+            )
+            assertEquals(7701, verifiedTrack.telegramFileId)
+            assertEquals("fresh_unique_7701", verifiedTrack.telegramRemoteUniqueId)
+            val savedEntity = memDb.trackDao().getTrackById("tg_77_9001")
+            assertEquals("COMPLETED", savedEntity?.downloadStatus)
+            assertTrue((savedEntity?.lastVerifiedAtEpochMs ?: 0L) > 0L)
+
+            val missingResult = resolver.ensureVerifiedLocalAudioFile(missingMessageEntity.toDomain())
+            assertTrue("Deleted message should fail explicitly", missingResult.isFailure)
+            assertTrue(missingResult.exceptionOrNull()?.message?.isNotBlank() == true)
+
+            memDb.close()
+            tdDownloadDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun databaseMigration3To4PreservesPersonalTelegramTracksAndAddsPublicChannelsTable() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val dbName = "test_migration_3_to_4.db"
+            context.deleteDatabase(dbName)
+            val factory = FrameworkSQLiteOpenHelperFactory()
+            val config = SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbName)
+                .callback(object : SupportSQLiteOpenHelper.Callback(2) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        db.execSQL(
+                            """
+                            CREATE TABLE tracks (
+                                id TEXT PRIMARY KEY NOT NULL,
+                                title TEXT NOT NULL,
+                                artist TEXT NOT NULL,
+                                album TEXT NOT NULL,
+                                source TEXT NOT NULL,
+                                durationMs INTEGER NOT NULL,
+                                format TEXT NOT NULL,
+                                bitrateKbps INTEGER NOT NULL,
+                                sampleRateHz INTEGER NOT NULL,
+                                bitDepth INTEGER,
+                                fileSizeBytes INTEGER NOT NULL,
+                                fileHash TEXT,
+                                fileName TEXT NOT NULL,
+                                artworkUri TEXT,
+                                streamUri TEXT,
+                                localPath TEXT,
+                                telegramChatId INTEGER,
+                                telegramChatTitle TEXT,
+                                telegramMessageId INTEGER,
+                                telegramFileId INTEGER,
+                                telegramThreadId INTEGER,
+                                telegramTopicName TEXT,
+                                youtubeVideoId TEXT,
+                                genre TEXT NOT NULL,
+                                genreManuallyEdited INTEGER NOT NULL,
+                                isVoiceMessage INTEGER NOT NULL,
+                                downloadStatus TEXT NOT NULL,
+                                downloadProgress REAL NOT NULL,
+                                isFavorite INTEGER NOT NULL,
+                                dateAddedEpochMs INTEGER NOT NULL,
+                                lastPlayedEpochMs INTEGER NOT NULL,
+                                playCount INTEGER NOT NULL,
+                                loudnessGainDb REAL NOT NULL,
+                                bpm INTEGER NOT NULL,
+                                normalizedSearchBlob TEXT NOT NULL
+                            )
+                            """.trimIndent()
+                        )
+                        db.execSQL(
+                            """
+                            INSERT INTO tracks VALUES (
+                                'tg_1_2', 'Old Track', 'Artist', 'Album', 'TELEGRAM',
+                                180000, 'FLAC', 1411, 44100, 16, 10000, NULL, 'old.flac',
+                                NULL, 'tg://file/1?size=10000', NULL, 1, 'Chat', 2, 1, NULL, NULL,
+                                NULL, 'POP', 0, 0, 'NONE', 0.0, 0, 1000, 0, 0, 0.0, 0, 'old track'
+                            )
+                            """.trimIndent()
+                        )
+                    }
+
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                })
+                .build()
+
+            val helper = factory.create(config)
+            val sqliteDb = helper.writableDatabase
+            MusicPlayerDatabase.MIGRATION_2_3.migrate(sqliteDb)
+            MusicPlayerDatabase.MIGRATION_3_4.migrate(sqliteDb)
+            sqliteDb.close()
+
+            val migratedDb = Room.databaseBuilder(context, MusicPlayerDatabase::class.java, dbName)
+                .allowMainThreadQueries()
+                .build()
+            val preserved = migratedDb.trackDao().getTrackById("tg_1_2")
+            assertNotNull(preserved)
+            assertEquals(TelegramOrigin.PERSONAL_TELEGRAM.name, preserved?.telegramOrigin)
+            assertEquals(0, migratedDb.publicChannelDao().getPublicChannelsOnce().size)
+
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun publicTelegramRepositoryBackendAndBotModesSyncPauseRemoveAndIsolateFromPersonalLogout() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val memDb = Room.inMemoryDatabaseBuilder(context, MusicPlayerDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+            val settings = SettingsDataStore(context, SecureCredentialStore(context))
+            val logger = ActivityLogger(memDb.activityLogDao())
+            val storage = UnifiedStorageManager(context, settings, logger)
+
+            settings.setPublicChannelSyncEnabled(true)
+            settings.setPublicChannelAccessMode(PublicChannelAccessMode.BACKEND_API)
+            settings.savePublicBackendConfig("https://tg-proxy.example.com", "secret-bearer-token")
+            settings.savePublicBotToken("12345:FAKEBOTTOKEN")
+
+            val mockHttpClient = OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val req = chain.request()
+                    val urlStr = req.url.toString()
+                    val json = when {
+                        urlStr.contains("/v1/telegram/public/resolve") -> """
+                            {
+                              "username": "lossless_vn",
+                              "title": "Lossless Vietnam",
+                              "avatarUrl": "https://cdn.example.com/avatar.jpg"
+                            }
+                        """.trimIndent()
+                        urlStr.contains("/v1/telegram/public/channels/lossless_vn/audio") -> """
+                            {
+                              "items": [
+                                {
+                                  "messageId": 401,
+                                  "title": "Nàng Thơ FLAC",
+                                  "artist": "Hoàng Dũng",
+                                  "album": "@lossless_vn",
+                                  "fileName": "nang_tho.flac",
+                                  "mimeType": "audio/flac",
+                                  "format": "flac",
+                                  "durationMs": 254000,
+                                  "bitrateKbps": 1411,
+                                  "fileSizeBytes": 28000000,
+                                  "streamUrl": "https://tg-proxy.example.com/v1/telegram/public/channels/lossless_vn/stream/401"
+                                }
+                              ],
+                              "nextCursor": null
+                            }
+                        """.trimIndent()
+                        urlStr.contains("/getChat?") -> """
+                            {
+                              "ok": true,
+                              "result": { "id": -100999, "title": "Bot Audio Hub", "username": "bot_audio_hub" }
+                            }
+                        """.trimIndent()
+                        urlStr.contains("/getUpdates?") -> """
+                            {
+                              "ok": true,
+                              "result": [
+                                {
+                                  "update_id": 1001,
+                                  "channel_post": {
+                                    "message_id": 77,
+                                    "chat": { "id": -100999, "username": "bot_audio_hub", "title": "Bot Audio Hub" },
+                                    "audio": {
+                                      "file_id": "BOT_FILE_77",
+                                      "file_unique_id": "BOT_UNIQ_77",
+                                      "duration": 210,
+                                      "performer": "Mỹ Tâm",
+                                      "title": "Ước Gì",
+                                      "file_name": "uoc_gi.mp3",
+                                      "mime_type": "audio/mpeg",
+                                      "file_size": 7500000
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                        """.trimIndent()
+                        urlStr.contains("/getFile?") -> """
+                            {
+                              "ok": true,
+                              "result": { "file_id": "BOT_FILE_77", "file_path": "music/uoc_gi.mp3" }
+                            }
+                        """.trimIndent()
+                        else -> "{}"
+                    }
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(json.toResponseBody("application/json".toMediaType()))
+                        .build()
+                }
+                .build()
+
+            val repo = com.laughing.musicplayer.data.telegram.PublicTelegramRepository(
+                context = context,
+                publicChannelDao = memDb.publicChannelDao(),
+                trackDao = memDb.trackDao(),
+                downloadCacheDao = memDb.downloadCacheDao(),
+                settingsDataStore = settings,
+                storageManager = storage,
+                httpClientProvider = { mockHttpClient },
+                logger = logger
+            )
+
+            // Insert a personal Telegram track to test strict isolation
+            memDb.trackDao().upsertTracks(
+                listOf(
+                    TrackEntity(
+                        id = "tg_10_1",
+                        title = "Personal Song",
+                        artist = "Personal Artist",
+                        album = "Personal",
+                        source = "TELEGRAM",
+                        telegramOrigin = TelegramOrigin.PERSONAL_TELEGRAM.name,
+                        durationMs = 100_000L,
+                        format = "MP3",
+                        bitrateKbps = 320,
+                        sampleRateHz = 44100,
+                        bitDepth = null,
+                        fileSizeBytes = 1000L,
+                        fileHash = null,
+                        fileName = "personal.mp3",
+                        artworkUri = null,
+                        streamUri = "tg://file/1",
+                        localPath = null,
+                        telegramChatId = 10L,
+                        telegramChatTitle = "Personal",
+                        telegramMessageId = 1L,
+                        telegramFileId = 1,
+                        telegramRemoteFileId = "r1",
+                        telegramThreadId = null,
+                        telegramTopicName = null,
+                        youtubeVideoId = null,
+                        genre = "POP",
+                        genreManuallyEdited = false,
+                        isVoiceMessage = false,
+                        downloadStatus = "NONE",
+                        downloadProgress = 0f,
+                        isFavorite = false,
+                        dateAddedEpochMs = 100L,
+                        lastPlayedEpochMs = 0L,
+                        playCount = 0,
+                        loudnessGainDb = 0f,
+                        bpm = 0,
+                        normalizedSearchBlob = "personal song"
+                    )
+                )
+            )
+
+            // 1. Add & Sync via Backend API mode
+            val addBackendRes = repo.addChannel("https://t.me/lossless_vn")
+            assertTrue(addBackendRes.isSuccess)
+            val syncBackendRes = repo.syncChannel("lossless_vn", resetCursor = true)
+            assertEquals(1, syncBackendRes.getOrThrow())
+
+            val backendTrack = memDb.trackDao().getTrackById("tgpub_lossless_vn_401")
+            assertNotNull(backendTrack)
+            assertEquals(TelegramOrigin.PUBLIC_TELEGRAM.name, backendTrack?.telegramOrigin)
+            val streamReq = repo.resolvePlayableRequest(backendTrack!!.toDomain()).getOrThrow()
+            assertEquals("Bearer secret-bearer-token", streamReq.headers["Authorization"])
+
+            // 2. Switch to Bot API mode and sync a second public channel
+            settings.setPublicChannelAccessMode(PublicChannelAccessMode.BOT_API)
+            val addBotRes = repo.addChannel("@bot_audio_hub")
+            assertTrue(addBotRes.isSuccess)
+            val syncBotRes = repo.syncChannel("bot_audio_hub", resetCursor = true)
+            assertEquals(1, syncBotRes.getOrThrow())
+            val botTrack = memDb.trackDao().getTrackById("tgpub_bot_audio_hub_77")
+            assertNotNull(botTrack)
+            val botStreamReq = repo.resolvePlayableRequest(botTrack!!.toDomain()).getOrThrow()
+            assertTrue(botStreamReq.url.contains("music/uoc_gi.mp3"))
+
+            // 3. Pause / Resume / Remove
+            repo.pauseChannelSync("lossless_vn")
+            assertTrue(memDb.publicChannelDao().getChannel("lossless_vn")?.isPaused == true)
+            repo.removeChannel("bot_audio_hub")
+            assertEquals(null, memDb.trackDao().getTrackById("tgpub_bot_audio_hub_77"))
+
+            // 4. Logout Personal Telegram MUST NOT delete PUBLIC_TELEGRAM tracks or public_channels
+            memDb.trackDao().deletePersonalTelegramTracks()
+            assertEquals(null, memDb.trackDao().getTrackById("tg_10_1"))
+            assertNotNull(memDb.trackDao().getTrackById("tgpub_lossless_vn_401"))
+            assertNotNull(memDb.publicChannelDao().getChannel("lossless_vn"))
+
+            memDb.close()
+        }
+    }
+
+    @Test
+    fun publicChannelsUiAndLibraryTelegramOriginChipsWorkCorrectly() {
+        composeRule.waitForIdle()
+        // 1. Navigate to Library -> Telegram origin chips
+        composeRule.onNodeWithTag("nav_library").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("telegram_origin_filter_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("tg_origin_all").assertIsDisplayed()
+        composeRule.onNodeWithTag("tg_origin_personal").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tg_origin_public").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tg_origin_all").performClick()
+        composeRule.waitForIdle()
+
+        // 2. Navigate Settings -> Kênh Telegram công khai
+        composeRule.onNodeWithTag("nav_settings").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_public_tg_channels"))
+        composeRule.onNodeWithTag("setting_public_tg_channels").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("public_telegram_channels_screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("public_tg_enable_switch").assertIsDisplayed()
+        composeRule.onNodeWithTag("public_tg_mode_backend_api").assertIsDisplayed()
+        composeRule.onNodeWithTag("public_tg_mode_bot_api").assertIsDisplayed()
+        composeRule.onNodeWithTag("public_tg_channel_input").assertIsDisplayed()
+        composeRule.onNodeWithTag("public_tg_add_btn").assertIsDisplayed()
     }
 }

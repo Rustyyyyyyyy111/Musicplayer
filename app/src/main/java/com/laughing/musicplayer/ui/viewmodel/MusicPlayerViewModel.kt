@@ -23,8 +23,11 @@ import com.laughing.musicplayer.core.model.GenreType
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.PlaylistItem
 import com.laughing.musicplayer.core.model.ProxyConfig
+import com.laughing.musicplayer.core.model.PublicChannelAccessMode
+import com.laughing.musicplayer.core.model.PublicChannelItem
 import com.laughing.musicplayer.core.model.SmartPlaylistType
 import com.laughing.musicplayer.core.model.TelegramChatItem
+import com.laughing.musicplayer.core.model.TelegramOrigin
 import com.laughing.musicplayer.core.model.TelegramTopicItem
 import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.core.model.Track
@@ -168,6 +171,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     val telegramTopics: StateFlow<List<TelegramTopicItem>> = container.telegramForumTopics.observeAllTopics()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val publicChannels: StateFlow<List<PublicChannelItem>> = container.publicTelegramRepository.observeChannels()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val downloads: StateFlow<List<DownloadItem>> = downloadCacheDao.observeDownloads()
         .map { list -> list.map { it.toDomain() } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -184,6 +190,15 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val _selectedLibrarySource = MutableStateFlow(MusicSource.TELEGRAM)
     val selectedLibrarySource: StateFlow<MusicSource> = _selectedLibrarySource.asStateFlow()
+
+    private val _selectedTelegramOrigin = MutableStateFlow<TelegramOrigin?>(null)
+    val selectedTelegramOrigin: StateFlow<TelegramOrigin?> = _selectedTelegramOrigin.asStateFlow()
+
+    private val _isAddingPublicChannel = MutableStateFlow(false)
+    val isAddingPublicChannel: StateFlow<Boolean> = _isAddingPublicChannel.asStateFlow()
+
+    private val _publicChannelError = MutableStateFlow<String?>(null)
+    val publicChannelError: StateFlow<String?> = _publicChannelError.asStateFlow()
 
     private val _liquidGlassPalette = MutableStateFlow(LiquidGlassPalette())
     val liquidGlassPalette: StateFlow<LiquidGlassPalette> = _liquidGlassPalette.asStateFlow()
@@ -365,6 +380,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         _selectedLibrarySource.value = source
     }
 
+    fun selectTelegramOrigin(origin: TelegramOrigin?) {
+        _selectedTelegramOrigin.value = origin
+    }
+
     fun buildArtistGroups(tracks: List<Track>, topics: List<TelegramTopicItem>): List<ArtistGroup> {
         val topicGroups = mutableListOf<ArtistGroup>()
         val nonTopicBuckets = linkedMapOf<String, MutableList<Track>>()
@@ -507,14 +526,20 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     // Download & Local Management
     fun downloadTrack(track: Track) {
         when (track.source) {
-            MusicSource.TELEGRAM -> container.telegramMusicRepository.startOfflineDownload(track)
+            MusicSource.TELEGRAM -> {
+                if (track.telegramOrigin == TelegramOrigin.PUBLIC_TELEGRAM) {
+                    container.publicTelegramRepository.startOfflineDownload(track)
+                } else {
+                    container.telegramMusicRepository.startOfflineDownload(track)
+                }
+            }
             MusicSource.YOUTUBE_MUSIC -> container.youTubeDownloadManager.downloadTrack(track)
             MusicSource.OFFLINE -> Unit
         }
     }
 
     fun pauseDownload(track: Track) {
-        if (track.source == MusicSource.TELEGRAM) {
+        if (track.source == MusicSource.TELEGRAM && track.telegramOrigin != TelegramOrigin.PUBLIC_TELEGRAM) {
             container.telegramMusicRepository.pauseDownload(track)
         }
     }
@@ -537,7 +562,15 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun deleteLocalTrackOnly(track: Track) {
         viewModelScope.launch(Dispatchers.IO) {
             when (track.source) {
-                MusicSource.TELEGRAM -> container.telegramMusicRepository.deleteLocalCopyOnly(track)
+                MusicSource.TELEGRAM -> {
+                    if (track.telegramOrigin == TelegramOrigin.PUBLIC_TELEGRAM) {
+                        container.storageManager.deleteLocalFile(track.localPath)
+                        trackDao.updateDownloadState(track.id, com.laughing.musicplayer.core.model.DownloadStatus.NONE.name, 0f, null)
+                        downloadCacheDao.deleteDownload("dl_pub_${track.id}")
+                    } else {
+                        container.telegramMusicRepository.deleteLocalCopyOnly(track)
+                    }
+                }
                 MusicSource.YOUTUBE_MUSIC -> container.youTubeDownloadManager.deleteLocalCopy(track)
                 MusicSource.OFFLINE -> {
                     container.storageManager.deleteLocalFile(track.localPath)
@@ -654,6 +687,89 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             val count = container.telegramMusicRepository.scanSingleChat(chatId)
             _isScanningTelegram.value = false
             _statusToast.value = "Đã quét $count bài nhạc từ hội thoại"
+        }
+    }
+
+    // Public Telegram Channel Sync (Independent of Personal Telegram Login)
+    fun observePublicChannelTracks(username: String): kotlinx.coroutines.flow.Flow<List<Track>> {
+        return container.publicTelegramRepository.observeTracksForChannel(username)
+    }
+
+    fun setPublicChannelSyncEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            container.settingsDataStore.setPublicChannelSyncEnabled(enabled)
+            _statusToast.value = if (enabled) "Đã bật đồng bộ Kênh công khai" else "Đã tắt đồng bộ Kênh công khai"
+        }
+    }
+
+    fun setPublicChannelAccessMode(mode: PublicChannelAccessMode) {
+        viewModelScope.launch {
+            container.settingsDataStore.setPublicChannelAccessMode(mode)
+        }
+    }
+
+    fun getPublicBackendTokenSnapshot(): String = container.settingsDataStore.getPublicBackendToken()
+    fun getPublicBotTokenSnapshot(): String = container.settingsDataStore.getPublicBotToken()
+
+    fun savePublicBackendConfig(baseUrl: String, bearerToken: String) {
+        viewModelScope.launch {
+            container.settingsDataStore.savePublicBackendConfig(baseUrl, bearerToken)
+            _publicChannelError.value = null
+            _statusToast.value = "Đã lưu cấu hình Backend API Kênh công khai"
+        }
+    }
+
+    fun savePublicBotToken(botToken: String) {
+        viewModelScope.launch {
+            container.settingsDataStore.savePublicBotToken(botToken)
+            _publicChannelError.value = null
+            _statusToast.value = "Đã lưu Bot Token (mã hóa bằng Android Keystore)"
+        }
+    }
+
+    fun clearPublicChannelError() {
+        _publicChannelError.value = null
+    }
+
+    fun addPublicChannel(rawInput: String) {
+        viewModelScope.launch {
+            _isAddingPublicChannel.value = true
+            _publicChannelError.value = null
+            container.publicTelegramRepository.addChannel(rawInput)
+                .onSuccess { item ->
+                    _isAddingPublicChannel.value = false
+                    _statusToast.value = "Đã thêm kênh công khai @${item.username}"
+                }
+                .onFailure { err ->
+                    _isAddingPublicChannel.value = false
+                    _publicChannelError.value = err.message ?: "Không thể thêm kênh công khai"
+                }
+        }
+    }
+
+    fun syncPublicChannel(channelKey: String) {
+        container.publicTelegramRepository.launchChannelSync(channelKey, resetCursor = false)
+    }
+
+    fun pausePublicChannel(channelKey: String) {
+        viewModelScope.launch { container.publicTelegramRepository.pauseChannelSync(channelKey) }
+    }
+
+    fun resumePublicChannel(channelKey: String) {
+        viewModelScope.launch { container.publicTelegramRepository.resumeChannelSync(channelKey) }
+    }
+
+    fun removePublicChannel(channelKey: String) {
+        viewModelScope.launch {
+            container.publicTelegramRepository.removeChannel(channelKey)
+            _statusToast.value = "Đã xóa kênh công khai @$channelKey"
+        }
+    }
+
+    fun syncAllPublicChannels() {
+        viewModelScope.launch {
+            container.publicTelegramRepository.syncAllEnabledChannels()
+            _statusToast.value = "Đã đồng bộ xong các kênh công khai"
         }
     }
 
@@ -844,7 +960,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private fun matchesSearchQuery(track: Track, query: String): Boolean {
-        val blob = "${track.title} ${track.artist} ${track.album} ${track.telegramTopicName.orEmpty()} ${track.fileName} ${track.telegramChatTitle.orEmpty()}"
+        val blob = "${track.title} ${track.artist} ${track.album} ${track.telegramTopicName.orEmpty()} ${track.publicChannelUsername.orEmpty()} ${track.fileName} ${track.telegramChatTitle.orEmpty()}"
         return VietnameseTextNormalizer.matches(blob, query)
     }
 
