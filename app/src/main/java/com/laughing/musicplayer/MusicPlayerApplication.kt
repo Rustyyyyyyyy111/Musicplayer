@@ -124,8 +124,7 @@ class AppContainer(context: Context) {
 
     val youTubeMusicRepository = YouTubeMusicRepository(networkProxyManager, database.trackDao(), activityLogger)
     val youTubeDownloadManager = YouTubeDownloadManager(
-        youTubeMusicRepository,
-        networkProxyManager,
+        appContext,
         database.trackDao(),
         database.downloadCacheDao(),
         storageManager,

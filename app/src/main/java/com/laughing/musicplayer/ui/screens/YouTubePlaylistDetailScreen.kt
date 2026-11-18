@@ -90,9 +90,8 @@ fun YouTubePlaylistDetailScreen(
             }
             Text(
                 text = when (activeCollection.kind) {
-                    YouTubeSearchTab.ALBUMS -> "Album YouTube Music"
-                    YouTubeSearchTab.ARTISTS -> "Nghệ sĩ YouTube Music"
-                    else -> "Playlist YouTube Music"
+                    YouTubeSearchTab.CHANNELS -> "Kênh YouTube"
+                    else -> "Playlist YouTube"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,

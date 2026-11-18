@@ -652,7 +652,7 @@ fun TrackRowItem(
                                         onClick = { menuExpanded = false }
                                     )
                                 }
-                                DownloadStatus.DOWNLOADING -> {
+                                DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
                                     DropdownMenuItem(
                                         text = { Text("Đang tải ${(track.downloadProgress * 100).toInt()}%") },
                                         leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },

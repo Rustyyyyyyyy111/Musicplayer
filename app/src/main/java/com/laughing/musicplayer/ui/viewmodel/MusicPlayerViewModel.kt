@@ -62,7 +62,7 @@ import java.io.File
 
 data class YouTubeUiState(
     val query: String = "",
-    val activeTab: YouTubeSearchTab = YouTubeSearchTab.SONGS,
+    val activeTab: YouTubeSearchTab = YouTubeSearchTab.VIDEOS,
     val isSearching: Boolean = false,
     val tracks: List<Track> = emptyList(),
     val collections: List<YouTubeCollectionResult> = emptyList(),
@@ -72,7 +72,7 @@ data class YouTubeUiState(
 data class UnifiedSearchUiState(
     val query: String = "",
     val activeTab: UnifiedSearchTab = UnifiedSearchTab.ALL,
-    val youtubeSubTab: YouTubeSearchTab = YouTubeSearchTab.SONGS,
+    val youtubeSubTab: YouTubeSearchTab = YouTubeSearchTab.VIDEOS,
     val offlineResults: List<Track> = emptyList(),
     val telegramResults: List<Track> = emptyList(),
     val youtubeTracks: List<Track> = emptyList(),
@@ -199,7 +199,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val _searchQuery = MutableStateFlow("")
     private val _searchTab = MutableStateFlow(UnifiedSearchTab.ALL)
-    private val _searchYouTubeSubTab = MutableStateFlow(YouTubeSearchTab.SONGS)
+    private val _searchYouTubeSubTab = MutableStateFlow(YouTubeSearchTab.VIDEOS)
     private val _manualSearchPulse = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
@@ -838,7 +838,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun downloadPlaylistTracks(tracks: List<Track>) {
         val count = container.youTubeDownloadManager.downloadPlaylist(tracks)
         _statusToast.value = if (count > 0) {
-            "Đang tải $count bài hát OPUS vào /sdcard/Music/Musicplayer/"
+            "Đang tải $count bài hát vào ${container.storageManager.getYouTubeDisplayPath()}"
         } else {
             "Tất cả bài hát trong playlist đã được tải về"
         }

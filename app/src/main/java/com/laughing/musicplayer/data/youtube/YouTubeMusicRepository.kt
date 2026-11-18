@@ -32,14 +32,15 @@ import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
-import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.MediaFormat
+import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.StreamExtractor
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
 enum class YouTubeSearchTab(val labelVi: String, val filterKey: String) {
-    SONGS("Bài hát", "music_songs"),
-    ALBUMS("Album", "music_albums"),
-    ARTISTS("Nghệ sĩ", "music_artists"),
-    PLAYLISTS("Playlist", "music_playlists")
+    VIDEOS("Video", "videos"),
+    CHANNELS("Kênh", "channels"),
+    PLAYLISTS("Playlist", "playlists")
 }
 
 enum class YouTubeExploreMood(
@@ -156,20 +157,26 @@ class YouTubeMusicRepository(
                 withTimeout(STREAM_FETCH_TIMEOUT_MS) {
                     proxyManager.refreshHttpClient()
                     ensureInitialized()
-                    val raw = runInterruptible { executeSearchInternal(query.trim(), tab) }
+                    val raw = runInterruptible {
+                        executeSearchInternal(
+                            query = query.trim(),
+                            tab = tab,
+                            applyDurationFilter = true
+                        )
+                    }
                     val mergedTracks = mergeAndPersistTracks(raw.tracks)
-                    logger.log("YOUTUBE", "INFO", "Tìm kiếm YouTube Music '$query' (${tab.labelVi}): ${mergedTracks.size} bài, ${raw.collections.size} bộ sưu tập")
+                    logger.log("YOUTUBE", "INFO", "Tìm kiếm YouTube '$query' (${tab.labelVi}): ${mergedTracks.size} bài (60s-900s), ${raw.collections.size} bộ sưu tập")
                     Result.success(YouTubeSearchResult(tracks = mergedTracks, collections = raw.collections))
                 }
             } catch (_: TimeoutCancellationException) {
-                logger.log("YOUTUBE", "WARN", "Hết thời gian tìm kiếm YouTube Music (quá 7.5 giây)")
-                Result.failure(IOException("Hết thời gian kết nối YouTube Music"))
+                logger.log("YOUTUBE", "WARN", "Hết thời gian tìm kiếm YouTube (quá 7.5 giây)")
+                Result.failure(IOException("Hết thời gian kết nối YouTube"))
             } catch (_: SocketTimeoutException) {
-                logger.log("YOUTUBE", "WARN", "Timeout socket khi tìm YouTube Music")
-                Result.failure(IOException("Mạng quá chậm, không thể tải kết quả YouTube Music"))
+                logger.log("YOUTUBE", "WARN", "Timeout socket khi tìm YouTube")
+                Result.failure(IOException("Mạng quá chậm, không thể tải kết quả YouTube"))
             } catch (err: Exception) {
                 if (err is kotlinx.coroutines.CancellationException) throw err
-                logger.log("YOUTUBE", "ERROR", "Lỗi tìm kiếm YouTube Music: ${err.message}")
+                logger.log("YOUTUBE", "ERROR", "Lỗi tìm kiếm YouTube: ${err.message}")
                 Result.failure(err)
             }
         }
@@ -184,28 +191,44 @@ class YouTubeMusicRepository(
                     val chartsDeferred = async {
                         runCatching {
                             runInterruptible {
-                                executeSearchInternal("Top 100 Nhạc Việt Bảng Xếp Hạng", YouTubeSearchTab.SONGS).tracks
+                                executeSearchInternal(
+                                    query = "Top 100 Nhạc Việt Remix Cover Hot",
+                                    tab = YouTubeSearchTab.VIDEOS,
+                                    applyDurationFilter = false
+                                ).tracks
                             }
                         }.getOrDefault(emptyList())
                     }
                     val trendingDeferred = async {
                         runCatching {
                             runInterruptible {
-                                executeSearchInternal("Nhạc Việt Thịnh Hành Hot Nhất", YouTubeSearchTab.SONGS).tracks
+                                executeSearchInternal(
+                                    query = "Nhạc Việt Lofi Chill Live Thịnh Hành",
+                                    tab = YouTubeSearchTab.VIDEOS,
+                                    applyDurationFilter = false
+                                ).tracks
                             }
                         }.getOrDefault(emptyList())
                     }
                     val playlistsDeferred = async {
                         runCatching {
                             runInterruptible {
-                                executeSearchInternal("Playlist Nhạc Việt Nổi Bật", YouTubeSearchTab.PLAYLISTS).collections
+                                executeSearchInternal(
+                                    query = "Playlist Nhạc Việt Nổi Bật",
+                                    tab = YouTubeSearchTab.PLAYLISTS,
+                                    applyDurationFilter = false
+                                ).collections
                             }
                         }.getOrDefault(emptyList())
                     }
-                    val albumsDeferred = async {
+                    val mixesDeferred = async {
                         runCatching {
                             runInterruptible {
-                                executeSearchInternal("Album Nhạc Mới Phát Hành", YouTubeSearchTab.ALBUMS).collections
+                                executeSearchInternal(
+                                    query = "Album Nhạc Mới Remix Lofi Playlist",
+                                    tab = YouTubeSearchTab.PLAYLISTS,
+                                    applyDurationFilter = false
+                                ).collections
                             }
                         }.getOrDefault(emptyList())
                     }
@@ -217,10 +240,10 @@ class YouTubeMusicRepository(
                         .ifEmpty { trendingDeferred.await() }
                         .take(12)
                     val playlists = playlistsDeferred.await().take(15)
-                    val newReleases = albumsDeferred.await().take(15)
+                    val newReleases = mixesDeferred.await().take(15)
 
                     if (chartRaw.isEmpty() && trendingRaw.isEmpty() && playlists.isEmpty() && newReleases.isEmpty()) {
-                        throw IOException("Không thể tải dữ liệu Khám phá YouTube Music")
+                        throw IOException("Không thể tải dữ liệu Khám phá YouTube")
                     }
 
                     val persistedMap = mergeAndPersistTracks(chartRaw + trendingRaw).associateBy { it.id }
@@ -261,14 +284,22 @@ class YouTubeMusicRepository(
                         val songsDeferred = async {
                             runCatching {
                                 runInterruptible {
-                                    executeSearchInternal(mood.songQuery, YouTubeSearchTab.SONGS).tracks
+                                    executeSearchInternal(
+                                        query = mood.songQuery,
+                                        tab = YouTubeSearchTab.VIDEOS,
+                                        applyDurationFilter = false
+                                    ).tracks
                                 }
                             }.getOrDefault(emptyList())
                         }
                         val playlistsDeferred = async {
                             runCatching {
                                 runInterruptible {
-                                    executeSearchInternal(mood.playlistQuery, YouTubeSearchTab.PLAYLISTS).collections
+                                    executeSearchInternal(
+                                        query = mood.playlistQuery,
+                                        tab = YouTubeSearchTab.PLAYLISTS,
+                                        applyDurationFilter = false
+                                    ).collections
                                 }
                             }.getOrDefault(emptyList())
                         }
@@ -302,9 +333,13 @@ class YouTubeMusicRepository(
                     proxyManager.refreshHttpClient()
                     ensureInitialized()
 
-                    val extractedTracks = if (collection.kind == YouTubeSearchTab.ARTISTS) {
+                    val extractedTracks = if (collection.kind == YouTubeSearchTab.CHANNELS) {
                         runInterruptible {
-                            executeSearchInternal(collection.title, YouTubeSearchTab.SONGS).tracks
+                            executeSearchInternal(
+                                query = collection.title,
+                                tab = YouTubeSearchTab.VIDEOS,
+                                applyDurationFilter = false
+                            ).tracks
                         }
                     } else {
                         val playlistUrl = normalizePlaylistUrl(collection.url)
@@ -320,13 +355,17 @@ class YouTubeMusicRepository(
                             streamItems.map { item ->
                                 mapStreamItemToTrack(
                                     item = item,
-                                    albumName = collection.title.ifBlank { "YouTube Music" }
+                                    albumName = collection.title.ifBlank { "YouTube" }
                                 )
                             }
                         } else {
-                            // Graceful fallback to YouTube Music songs query if album/artist browse URL isn't a classic list= URL
+                            // Fallback to standard YouTube videos query if channel/browse URL isn't a classic list= URL
                             runInterruptible {
-                                executeSearchInternal(collection.title, YouTubeSearchTab.SONGS).tracks
+                                executeSearchInternal(
+                                    query = collection.title,
+                                    tab = YouTubeSearchTab.VIDEOS,
+                                    applyDurationFilter = false
+                                ).tracks
                             }
                         }
                     }
@@ -359,7 +398,8 @@ class YouTubeMusicRepository(
 
     private fun executeSearchInternal(
         query: String,
-        tab: YouTubeSearchTab
+        tab: YouTubeSearchTab,
+        applyDurationFilter: Boolean = true
     ): YouTubeSearchResult {
         val extractor = ServiceList.YouTube.getSearchExtractor(
             query,
@@ -375,7 +415,10 @@ class YouTubeMusicRepository(
         items.forEach { item ->
             when (item) {
                 is StreamInfoItem -> {
-                    tracks += mapStreamItemToTrack(item, albumName = "YouTube Music")
+                    // Strictly keep only 60s..900s videos on Search to exclude Shorts and long podcasts
+                    if (!applyDurationFilter || isSearchDurationWithinMusicBounds(item.duration)) {
+                        tracks += mapStreamItemToTrack(item, albumName = "YouTube")
+                    }
                 }
                 is PlaylistInfoItem -> {
                     collections += YouTubeCollectionResult(
@@ -386,23 +429,23 @@ class YouTubeMusicRepository(
                             if (uploader.isNotBlank()) append(uploader)
                             if (item.streamCount > 0) {
                                 if (isNotEmpty()) append(" • ")
-                                append("${item.streamCount} bài")
+                                append("${item.streamCount} video")
                             }
-                            if (isEmpty()) append("Playlist YouTube Music")
+                            if (isEmpty()) append("Playlist YouTube")
                         },
                         artworkUrl = item.thumbnails.maxByOrNull { it.width }?.url,
                         url = item.url,
-                        kind = if (tab == YouTubeSearchTab.ALBUMS) YouTubeSearchTab.ALBUMS else YouTubeSearchTab.PLAYLISTS
+                        kind = YouTubeSearchTab.PLAYLISTS
                     )
                 }
                 is ChannelInfoItem -> {
                     collections += YouTubeCollectionResult(
                         id = item.url,
                         title = item.name.orEmpty(),
-                        subtitle = "Nghệ sĩ YouTube Music",
+                        subtitle = "Kênh YouTube",
                         artworkUrl = item.thumbnails.maxByOrNull { it.width }?.url,
                         url = item.url,
-                        kind = YouTubeSearchTab.ARTISTS
+                        kind = YouTubeSearchTab.CHANNELS
                     )
                 }
             }
@@ -487,24 +530,33 @@ class YouTubeMusicRepository(
                     } else {
                         "https://www.youtube.com/watch?v=$videoUrlOrId"
                     }
-                    val info = runInterruptible { StreamInfo.getInfo(ServiceList.YouTube, fullUrl) }
-                    val bestAudio = selectBestOpusFirstStream(info.audioStreams)
+                    val streamExtractor: StreamExtractor = ServiceList.YouTube.getStreamExtractor(fullUrl)
+                    runInterruptible { streamExtractor.fetchPage() }
+                    val bestAudio = selectBestOpusFirstStream(streamExtractor.audioStreams)
                         ?: throw IllegalStateException("Không tìm thấy luồng âm thanh hỗ trợ cho video này")
 
                     val mime = bestAudio.format?.mimeType.orEmpty()
                     val isOpus = isOpusStreamCandidate(
                         codec = bestAudio.codec,
                         mimeType = mime,
-                        formatName = bestAudio.format?.name
+                        formatName = bestAudio.format?.name,
+                        mediaFormat = bestAudio.format
                     )
                     val format = if (isOpus) AudioFormat.OPUS else AudioFormat.M4A
                     val sampleRateHz = if (format == AudioFormat.OPUS) 48000 else 44100
-                    val bitrateKbps = bestAudio.averageBitrate.coerceAtLeast(if (isOpus) 96 else 64)
+                    val bitrateKbps = bestAudio.averageBitrate
+                        .takeIf { it > 0 }
+                        ?: bestAudio.bitrate.takeIf { it > 0 }?.div(1000)
+                        ?: if (isOpus) 96 else 64
+                    val durationSeconds = runCatching { streamExtractor.length }.getOrDefault(0L).coerceAtLeast(0L)
+                    val artworkUrl = runCatching {
+                        streamExtractor.thumbnails.maxByOrNull { it.width }?.url
+                    }.getOrNull()
 
                     logger.log(
                         "YOUTUBE",
                         "INFO",
-                        "Đã chọn luồng ${format.extension.uppercase()} ($bitrateKbps kbps, ${sampleRateHz}Hz, mime=${mime.ifBlank { "n/a" }})"
+                        "Đã chọn luồng audio-only ${format.extension.uppercase()} ($bitrateKbps kbps, ${sampleRateHz}Hz, mime=${mime.ifBlank { "n/a" }})"
                     )
                     Result.success(
                         ResolvedYouTubeStream(
@@ -513,17 +565,17 @@ class YouTubeMusicRepository(
                             bitrateKbps = bitrateKbps,
                             sampleRateHz = sampleRateHz,
                             mimeType = mime.ifBlank { if (isOpus) "audio/webm" else "audio/mp4" },
-                            durationMs = (info.duration.coerceAtLeast(0L)) * 1000L,
-                            artworkUrl = info.thumbnails.maxByOrNull { it.width }?.url
+                            durationMs = durationSeconds * 1000L,
+                            artworkUrl = artworkUrl
                         )
                     )
                 }
             } catch (_: TimeoutCancellationException) {
                 logger.log("YOUTUBE", "WARN", "Hết thời gian lấy luồng âm thanh YouTube (quá 7.5 giây)")
-                Result.failure(IOException("Hết thời gian tải luồng YouTube Music"))
+                Result.failure(IOException("Hết thời gian tải luồng YouTube"))
             } catch (_: SocketTimeoutException) {
                 logger.log("YOUTUBE", "WARN", "Timeout socket khi tải luồng YouTube")
-                Result.failure(IOException("Hết thời gian kết nối YouTube Music"))
+                Result.failure(IOException("Hết thời gian kết nối YouTube"))
             } catch (err: Exception) {
                 if (err is kotlinx.coroutines.CancellationException) throw err
                 val rawMsg = err.message.orEmpty()
@@ -575,11 +627,24 @@ class YouTubeMusicRepository(
     companion object {
         const val STREAM_FETCH_TIMEOUT_MS = 7_500L
         const val FEED_TIMEOUT_MS = 8_000L
+        const val MIN_SEARCH_DURATION_SECONDS = 60L
+        const val MAX_SEARCH_DURATION_SECONDS = 900L
+
+        internal fun isSearchDurationWithinMusicBounds(durationSeconds: Long): Boolean {
+            return durationSeconds in MIN_SEARCH_DURATION_SECONDS..MAX_SEARCH_DURATION_SECONDS
+        }
+
+        internal fun filterSearchStreamItems(items: List<StreamInfoItem>): List<StreamInfoItem> {
+            return items.filter { isSearchDurationWithinMusicBounds(it.duration) }
+        }
+
         internal fun isOpusStreamCandidate(
             codec: String?,
             mimeType: String?,
-            formatName: String?
+            formatName: String?,
+            mediaFormat: MediaFormat? = null
         ): Boolean {
+            if (mediaFormat == MediaFormat.WEBMA_OPUS) return true
             return codec.orEmpty().contains("opus", ignoreCase = true) ||
                 mimeType.orEmpty().contains("opus", ignoreCase = true) ||
                 mimeType.orEmpty().contains("webm", ignoreCase = true) ||
@@ -587,19 +652,42 @@ class YouTubeMusicRepository(
                 formatName.orEmpty().contains("webm", ignoreCase = true)
         }
 
+        internal fun isM4aStreamCandidate(
+            codec: String?,
+            mimeType: String?,
+            formatName: String?,
+            mediaFormat: MediaFormat? = null
+        ): Boolean {
+            if (mediaFormat == MediaFormat.M4A) return true
+            return codec.orEmpty().contains("mp4a", ignoreCase = true) ||
+                mimeType.orEmpty().contains("mp4", ignoreCase = true) ||
+                mimeType.orEmpty().contains("m4a", ignoreCase = true) ||
+                formatName.orEmpty().contains("m4a", ignoreCase = true)
+        }
+
         internal fun selectBestOpusFirstStream(
-            streams: List<org.schabi.newpipe.extractor.stream.AudioStream>
-        ): org.schabi.newpipe.extractor.stream.AudioStream? {
+            streams: List<AudioStream>
+        ): AudioStream? {
             return streams
                 .filter { !it.content.isNullOrBlank() }
                 .sortedWith(
-                    compareByDescending<org.schabi.newpipe.extractor.stream.AudioStream> { stream ->
-                        isOpusStreamCandidate(
-                            codec = stream.codec,
-                            mimeType = stream.format?.mimeType,
-                            formatName = stream.format?.name
-                        )
-                    }.thenByDescending { it.averageBitrate }
+                    compareByDescending<AudioStream> { stream ->
+                        when {
+                            isOpusStreamCandidate(
+                                codec = stream.codec,
+                                mimeType = stream.format?.mimeType,
+                                formatName = stream.format?.name,
+                                mediaFormat = stream.format
+                            ) -> 2
+                            isM4aStreamCandidate(
+                                codec = stream.codec,
+                                mimeType = stream.format?.mimeType,
+                                formatName = stream.format?.name,
+                                mediaFormat = stream.format
+                            ) -> 1
+                            else -> 0
+                        }
+                    }.thenByDescending { it.averageBitrate.coerceAtLeast(it.bitrate) }
                 )
                 .firstOrNull()
         }

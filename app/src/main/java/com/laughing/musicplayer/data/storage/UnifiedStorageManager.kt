@@ -19,10 +19,13 @@ import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.data.local.SettingsDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import kotlin.coroutines.resume
 
 enum class StorageSubdir(val folderName: String) {
     TELEGRAM("Telegram"),
@@ -39,13 +42,32 @@ class UnifiedStorageManager(
     companion object {
         const val ROOT_FOLDER_NAME = "Musicplayer"
         const val PUBLIC_DISPLAY_PATH = "/sdcard/Music/Musicplayer/"
+        const val YOUTUBE_PUBLIC_DISPLAY_PATH = "/sdcard/Music Player/YouTube/"
+        const val YOUTUBE_SCOPED_RELATIVE_SUBPATH = "Music Player/YouTube"
     }
 
     fun getDisplayRootPath(): String = PUBLIC_DISPLAY_PATH
 
+    fun getYouTubeDisplayPath(): String {
+        return if (hasAllFilesAccessPermission()) {
+            YOUTUBE_PUBLIC_DISPLAY_PATH
+        } else {
+            "/sdcard/${Environment.DIRECTORY_MUSIC}/$YOUTUBE_SCOPED_RELATIVE_SUBPATH/"
+        }
+    }
+
     fun getDirectPublicMusicDir(): File {
         val publicMusic = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
         return File(publicMusic, ROOT_FOLDER_NAME)
+    }
+
+    fun getDirectYouTubeMusicDir(): File {
+        return File(Environment.getExternalStorageDirectory(), YOUTUBE_SCOPED_RELATIVE_SUBPATH)
+    }
+
+    fun getMediaStoreYouTubeDir(): File {
+        val publicMusic = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+        return File(publicMusic, YOUTUBE_SCOPED_RELATIVE_SUBPATH)
     }
 
     fun hasAudioReadPermission(): Boolean {
@@ -183,6 +205,170 @@ class UnifiedStorageManager(
         }.onFailure { err ->
             logger.log("STORAGE", "ERROR", "Lỗi lưu tệp $safeFileName: ${err.message}")
         }.getOrNull()
+    }
+
+    suspend fun saveYouTubeAudioToStorage(
+        fileName: String,
+        mimeType: String,
+        title: String,
+        artist: String,
+        album: String = "YouTube",
+        durationMs: Long = 0L,
+        inputProvider: () -> InputStream
+    ): String? = withContext(Dispatchers.IO) {
+        val safeFileName = sanitizeFileName(fileName)
+
+        // 1. User-configured SAF directory (writes inside "YouTube/" subfolder)
+        val safUriStr = settingsDataStore.preferencesFlow.first().safTreeUri
+        if (!safUriStr.isNullOrBlank()) {
+            val safSaved = runCatching {
+                val treeUri = Uri.parse(safUriStr)
+                val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return@runCatching null
+                val ytFolder = rootDoc.findFile(StorageSubdir.YOUTUBE.folderName)?.takeIf { it.isDirectory }
+                    ?: rootDoc.createDirectory(StorageSubdir.YOUTUBE.folderName)
+                    ?: rootDoc
+                ytFolder.findFile(safeFileName)?.delete()
+                val target = ytFolder.createFile(mimeType, safeFileName) ?: return@runCatching null
+                context.contentResolver.openOutputStream(target.uri)?.use { out ->
+                    inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
+                } ?: return@runCatching null
+                logger.log("STORAGE", "INFO", "Đã lưu nhạc YouTube qua SAF: $safeFileName")
+                target.uri.toString()
+            }.onFailure { err ->
+                logger.log("STORAGE", "WARN", "Lưu SAF thất bại, chuyển sang lưu trữ mặc định: ${err.message}")
+            }.getOrNull()
+            if (safSaved != null) return@withContext safSaved
+        }
+
+        // 2. Direct /sdcard/Music Player/YouTube/ when All Files Access (R+) or WRITE_EXTERNAL_STORAGE (<Q) is granted
+        if (hasAllFilesAccessPermission()) {
+            val directSaved = runCatching {
+                val targetDir = getDirectYouTubeMusicDir().apply { if (!exists()) mkdirs() }
+                if (!targetDir.exists() || !targetDir.canWrite()) return@runCatching null
+                val outFile = File(targetDir, safeFileName)
+                FileOutputStream(outFile).use { out ->
+                    inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
+                    out.fd.sync()
+                }
+                scanMediaFileAndWait(outFile.absolutePath, mimeType)
+                logger.log("STORAGE", "INFO", "Đã lưu trực tiếp vào $YOUTUBE_PUBLIC_DISPLAY_PATH$safeFileName")
+                outFile.absolutePath
+            }.onFailure { err ->
+                logger.log("STORAGE", "WARN", "Ghi trực tiếp vào $YOUTUBE_PUBLIC_DISPLAY_PATH thất bại: ${err.message}")
+            }.getOrNull()
+            if (directSaved != null) return@withContext directSaved
+        }
+
+        // 3. Android 10+ Scoped Storage fallback: MediaStore Music/Music Player/YouTube/
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val relativePath = "${Environment.DIRECTORY_MUSIC}/$YOUTUBE_SCOPED_RELATIVE_SUBPATH"
+            val mediaUri = saveToMediaStoreAudioWithFallbackMime(
+                safeFileName = safeFileName,
+                primaryMimeType = mimeType,
+                relativePath = relativePath,
+                title = title,
+                artist = artist,
+                album = album,
+                durationMs = durationMs,
+                inputProvider = inputProvider
+            )
+            if (mediaUri != null) {
+                logger.log("STORAGE", "INFO", "Đã lưu vào MediaStore $relativePath/$safeFileName")
+                return@withContext mediaUri
+            }
+        }
+
+        // 4. Final fallback to persistent app-managed YouTube folder + MediaStore scan
+        runCatching {
+            val outFile = File(getAppManagedDir(StorageSubdir.YOUTUBE), safeFileName)
+            FileOutputStream(outFile).use { out ->
+                inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
+                out.fd.sync()
+            }
+            scanMediaFileAndWait(outFile.absolutePath, mimeType)
+            logger.log("STORAGE", "INFO", "Đã lưu tệp YouTube: ${outFile.absolutePath}")
+            outFile.absolutePath
+        }.onFailure { err ->
+            logger.log("STORAGE", "ERROR", "Lỗi lưu tệp YouTube $safeFileName: ${err.message}")
+        }.getOrNull()
+    }
+
+    private fun saveToMediaStoreAudioWithFallbackMime(
+        safeFileName: String,
+        primaryMimeType: String,
+        relativePath: String,
+        title: String,
+        artist: String,
+        album: String,
+        durationMs: Long,
+        inputProvider: () -> InputStream
+    ): String? {
+        val resolver = context.contentResolver
+        val ext = safeFileName.substringAfterLast('.', "").lowercase()
+        val candidateMimes = buildList {
+            if (ext == "opus") {
+                add("audio/ogg")
+                add("audio/opus")
+            } else if (ext == "m4a") {
+                add("audio/mp4")
+            }
+            add(primaryMimeType)
+            add(null)
+        }.distinct()
+
+        for (candidateMime in candidateMimes) {
+            var insertedUri: Uri? = null
+            val attempt = runCatching {
+                val values = ContentValues().apply {
+                    put(MediaStore.Audio.Media.DISPLAY_NAME, safeFileName)
+                    if (!candidateMime.isNullOrBlank()) {
+                        put(MediaStore.Audio.Media.MIME_TYPE, candidateMime)
+                    }
+                    put(MediaStore.Audio.Media.RELATIVE_PATH, relativePath)
+                    put(MediaStore.Audio.Media.TITLE, title.ifBlank { safeFileName.substringBeforeLast('.') })
+                    put(MediaStore.Audio.Media.ARTIST, artist.ifBlank { "YouTube" })
+                    put(MediaStore.Audio.Media.ALBUM, album.ifBlank { "YouTube" })
+                    if (durationMs > 0L) {
+                        put(MediaStore.Audio.Media.DURATION, durationMs)
+                    }
+                    put(MediaStore.Audio.Media.IS_MUSIC, 1)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Audio.Media.IS_PENDING, 1)
+                    }
+                }
+                val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: return@runCatching null
+                insertedUri = uri
+                resolver.openOutputStream(uri)?.use { out ->
+                    inputProvider().use { input -> input.copyTo(out, 64 * 1024) }
+                } ?: return@runCatching null
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val doneValues = ContentValues().apply {
+                        put(MediaStore.Audio.Media.IS_PENDING, 0)
+                    }
+                    resolver.update(uri, doneValues, null, null)
+                }
+                uri.toString()
+            }
+            val resultUri = attempt.getOrNull()
+            if (resultUri != null) return resultUri
+            insertedUri?.let { runCatching { resolver.delete(it, null, null) } }
+        }
+        return null
+    }
+
+    suspend fun scanMediaFileAndWait(path: String, mimeType: String) {
+        withTimeoutOrNull(2_500L) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(path),
+                    arrayOf(mimeType)
+                ) { _, _ ->
+                    if (cont.isActive) cont.resume(Unit)
+                }
+            }
+        }
     }
 
     suspend fun saveArtworkFile(trackId: String, bytes: ByteArray): String? = withContext(Dispatchers.IO) {

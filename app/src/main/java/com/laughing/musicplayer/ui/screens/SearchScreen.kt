@@ -167,10 +167,10 @@ fun SearchScreen(
                 placeholder = {
                     Text(
                         when (searchState.activeTab) {
-                            UnifiedSearchTab.ALL -> "Tìm bài hát, playlist, Telegram & YouTube Music..."
+                            UnifiedSearchTab.ALL -> "Tìm bài hát, remix, cover, Telegram & YouTube..."
                             UnifiedSearchTab.OFFLINE -> "Tìm bài hát, nghệ sĩ, tên tệp Offline (không dấu)..."
                             UnifiedSearchTab.TELEGRAM -> "Tìm nhạc, chủ đề Forum, kênh Telegram..."
-                            UnifiedSearchTab.YOUTUBE_MUSIC -> "Tìm bài hát, album, nghệ sĩ YouTube Music..."
+                            UnifiedSearchTab.YOUTUBE_MUSIC -> "Tìm nhạc, remix, cover, live, lofi trên YouTube..."
                         }
                     )
                 },
@@ -329,7 +329,7 @@ fun SearchScreen(
                         exploreState.trendingTracks.isEmpty()
                     ) {
                         item(key = "explore_loading") {
-                            ExploreLoadingRow("Đang tải Khám phá YouTube Music...")
+                            ExploreLoadingRow("Đang tải Khám phá YouTube...")
                         }
                     } else if (exploreState.errorMessage != null &&
                         exploreState.featuredPlaylists.isEmpty() &&
@@ -338,7 +338,7 @@ fun SearchScreen(
                     ) {
                         item(key = "explore_error") {
                             ExploreErrorCard(
-                                message = exploreState.errorMessage ?: "Không thể tải Khám phá YouTube Music",
+                                message = exploreState.errorMessage ?: "Không thể tải Khám phá YouTube",
                                 onRetry = { viewModel.loadYouTubeExploreIfNeeded(forceRefresh = true) }
                             )
                         }
@@ -457,7 +457,7 @@ fun SearchScreen(
                 if (showYouTube) {
                     if (searchState.isSearchingYouTube) {
                         item(key = "yt_loading") {
-                            ExploreLoadingRow("Đang tìm trên YouTube Music...")
+                            ExploreLoadingRow("Đang tìm trên YouTube...")
                         }
                     }
                     searchState.youtubeError?.let { err ->
@@ -480,7 +480,7 @@ fun SearchScreen(
                     if (searchState.youtubeTracks.isNotEmpty()) {
                         item(key = "header_youtube") {
                             SearchGroupHeader(
-                                title = "YouTube Music",
+                                title = "YouTube (1–15 phút)",
                                 count = searchState.youtubeTracks.size
                             )
                         }

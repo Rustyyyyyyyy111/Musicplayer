@@ -37,14 +37,21 @@ class OfflineMusicRepository(
         val discovered = mutableListOf<Track>()
         val seenFilePaths = mutableSetOf<String>()
 
-        // 1. Index direct public directory /sdcard/Music/Musicplayer/ if readable
-        val publicDir = storageManager.getDirectPublicMusicDir()
-        if (publicDir.exists() && publicDir.canRead()) {
-            publicDir.listFiles()?.forEach { file ->
-                if (!file.isFile) return@forEach
-                val format = AudioFormatDetector.detectFromFile(file) ?: return@forEach
-                seenFilePaths += runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
-                discovered += buildTrackFromFile(file, format)
+        // 1. Index direct public directories (/sdcard/Music/Musicplayer/, /sdcard/Music Player/YouTube/, Music/Music Player/YouTube/) if readable
+        listOf(
+            storageManager.getDirectPublicMusicDir(),
+            storageManager.getDirectYouTubeMusicDir(),
+            storageManager.getMediaStoreYouTubeDir()
+        ).forEach { dir ->
+            if (dir.exists() && dir.canRead()) {
+                dir.listFiles()?.forEach { file ->
+                    if (!file.isFile) return@forEach
+                    val canonical = runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+                    if (canonical in seenFilePaths) return@forEach
+                    val format = AudioFormatDetector.detectFromFile(file) ?: return@forEach
+                    seenFilePaths += canonical
+                    discovered += buildTrackFromFile(file, format)
+                }
             }
         }
 
@@ -268,9 +275,21 @@ class OfflineMusicRepository(
     private suspend fun buildTrackFromFile(file: File, format: AudioFormat): Track {
         val trackId = "offline_file_${file.absolutePath.hashCode()}"
         val probed = AudioFormatDetector.probeAudioSpecs(file, format)
-        val title = probed.title ?: file.nameWithoutExtension
-        val artist = probed.artist ?: "Nghệ sĩ không rõ"
-        val album = probed.album ?: "Musicplayer"
+        val parsedNameParts = file.nameWithoutExtension.split(" - ", limit = 2)
+        val fallbackArtist = if (parsedNameParts.size == 2 && parsedNameParts[0].isNotBlank()) {
+            parsedNameParts[0].trim()
+        } else {
+            "Nghệ sĩ không rõ"
+        }
+        val fallbackTitle = if (parsedNameParts.size == 2 && parsedNameParts[1].isNotBlank()) {
+            parsedNameParts[1].trim()
+        } else {
+            file.nameWithoutExtension
+        }
+        val title = probed.title ?: fallbackTitle
+        val artist = probed.artist ?: fallbackArtist
+        val defaultAlbum = if (file.parentFile?.name.equals("YouTube", ignoreCase = true)) "YouTube" else "Musicplayer"
+        val album = probed.album ?: defaultAlbum
         val artworkPath = probed.embeddedArtwork?.let { bytes ->
             storageManager.saveArtworkFile(trackId, bytes)
         }

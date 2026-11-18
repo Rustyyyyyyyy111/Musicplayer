@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -51,6 +53,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.rounded.OfflinePin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -58,6 +61,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -80,10 +84,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.laughing.musicplayer.core.model.DownloadStatus
@@ -115,8 +122,12 @@ fun NowPlayingSheet(
     val palette = LocalLiquidGlassPalette.current
     val reducedMotion = rememberReducedMotionEnabled()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
+    val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
     val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
-    val track = playback.currentTrack ?: return
+    val rawTrack = playback.currentTrack ?: return
+    val track = remember(rawTrack, allTracks) {
+        allTracks.firstOrNull { it.id == rawTrack.id } ?: rawTrack
+    }
 
     var showLyricsView by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
@@ -390,10 +401,13 @@ fun NowPlayingSheet(
                             )
                         }
                     }
-                    if (track.source != MusicSource.OFFLINE && track.downloadStatus != DownloadStatus.COMPLETED) {
-                        IconButton(onClick = { viewModel.downloadTrack(track) }) {
-                            Icon(Icons.Filled.Download, contentDescription = "Tải về", tint = Color.White)
-                        }
+                    if (track.source != MusicSource.OFFLINE) {
+                        NowPlayingDownloadActionButton(
+                            status = track.downloadStatus,
+                            progress = track.downloadProgress,
+                            onStartDownload = { viewModel.downloadTrack(track) },
+                            onCancelDownload = { viewModel.cancelDownload(track) }
+                        )
                     }
                     IconButton(onClick = { viewModel.toggleFavorite(track) }) {
                         Icon(
@@ -734,5 +748,92 @@ fun NowPlayingSheet(
                 TextButton(onClick = { showLyricsSearchDialog = false }) { Text("Đóng") }
             }
         )
+    }
+}
+
+@Composable
+fun NowPlayingDownloadActionButton(
+    status: DownloadStatus,
+    progress: Float,
+    onStartDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    when (status) {
+        DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING -> {
+            val pct = (progress.coerceIn(0f, 1f) * 100f).toInt().coerceIn(0, 100)
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = Color.White.copy(alpha = 0.14f),
+                border = BorderStroke(0.75.dp, Color.White.copy(alpha = 0.28f)),
+                modifier = modifier
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .clickable(onClick = onCancelDownload)
+                    .semantics { contentDescription = "Hủy tải về ($pct%)" }
+                    .testTag("now_playing_download_progress")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (status == DownloadStatus.DOWNLOADING && progress > 0f) {
+                        CircularProgressIndicator(
+                            progress = { progress.coerceIn(0f, 1f) },
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.5.dp,
+                            color = Color.White,
+                            trackColor = Color.White.copy(alpha = 0.28f)
+                        )
+                    } else {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.5.dp,
+                            color = Color.White
+                        )
+                    }
+                    Text(
+                        text = "$pct%",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        modifier = Modifier.testTag("now_playing_download_percent")
+                    )
+                }
+            }
+        }
+        DownloadStatus.COMPLETED -> {
+            IconButton(
+                onClick = {},
+                enabled = false,
+                colors = IconButtonDefaults.iconButtonColors(
+                    disabledContentColor = Color(0xFF4ADE80)
+                ),
+                modifier = modifier
+                    .size(48.dp)
+                    .testTag("now_playing_downloaded_btn")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.OfflinePin,
+                    contentDescription = "Đã tải về"
+                )
+            }
+        }
+        else -> {
+            IconButton(
+                onClick = onStartDownload,
+                modifier = modifier
+                    .size(48.dp)
+                    .testTag("now_playing_download_btn")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Download,
+                    contentDescription = "Tải về",
+                    tint = Color.White
+                )
+            }
+        }
     }
 }

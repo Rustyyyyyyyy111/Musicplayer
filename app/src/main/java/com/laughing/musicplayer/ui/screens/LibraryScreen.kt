@@ -1052,8 +1052,8 @@ private fun EmptySourceCard(
             Text(
                 text = when (source) {
                     MusicSource.TELEGRAM -> "Mở Cài đặt > Nguồn nhạc để đăng nhập Telegram, chọn kênh/nhóm lấy nhạc và nhấn Đồng bộ ngay."
-                    MusicSource.YOUTUBE_MUSIC -> "Chuyển sang Tìm kiếm để tìm bài hát, album, nghệ sĩ và tải về /sdcard/Music/Musicplayer/."
-                    MusicSource.OFFLINE -> "Cấp quyền đọc âm thanh để lập chỉ mục nhạc lưu trữ trên máy và trong /sdcard/Music/Musicplayer/."
+                    MusicSource.YOUTUBE_MUSIC -> "Chuyển sang Tìm kiếm để tìm bài hát, remix, cover, live, lofi trên YouTube và tải về /sdcard/Music Player/YouTube/."
+                    MusicSource.OFFLINE -> "Cấp quyền đọc âm thanh để lập chỉ mục nhạc lưu trữ trên máy, /sdcard/Music Player/YouTube/ và /sdcard/Music/Musicplayer/."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.textSecondary
