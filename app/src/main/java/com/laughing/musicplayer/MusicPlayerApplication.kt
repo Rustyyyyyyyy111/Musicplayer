@@ -8,12 +8,14 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.laughing.musicplayer.audio.CastPlaybackCoordinator
 import com.laughing.musicplayer.audio.DualPlayerCrossfadeController
 import com.laughing.musicplayer.audio.MusicLibraryService
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.SecureCredentialStore
 import com.laughing.musicplayer.data.local.MusicPlayerDatabase
 import com.laughing.musicplayer.data.local.SettingsDataStore
+import com.laughing.musicplayer.data.storage.AudioTagEditor
 import com.laughing.musicplayer.data.storage.CacheManager
 import com.laughing.musicplayer.data.storage.OfflineMusicRepository
 import com.laughing.musicplayer.data.storage.UnifiedStorageManager
@@ -153,6 +155,18 @@ class AppContainer(context: Context) {
         settingsDataStore,
         playlistAndSmartMixManager,
         networkProxyManager,
+        activityLogger
+    )
+
+    val audioTagEditor = AudioTagEditor(
+        appContext,
+        database.trackDao(),
+        activityLogger
+    )
+
+    val castPlaybackCoordinator = CastPlaybackCoordinator(
+        appContext,
+        playerController,
         activityLogger
     )
 

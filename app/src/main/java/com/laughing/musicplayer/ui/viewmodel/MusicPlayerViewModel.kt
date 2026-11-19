@@ -8,8 +8,10 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
+import android.content.Context
 import com.laughing.musicplayer.BuildConfig
 import com.laughing.musicplayer.MusicPlayerApplication
+import com.laughing.musicplayer.audio.CastUiState
 import com.laughing.musicplayer.audio.PlaybackState
 import com.laughing.musicplayer.core.model.ActivityLogItem
 import com.laughing.musicplayer.core.model.AlbumGroup
@@ -32,7 +34,12 @@ import com.laughing.musicplayer.core.model.UnifiedSearchTab
 import com.laughing.musicplayer.core.util.DuplicateDetector
 import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.laughing.musicplayer.data.local.UserPreferences
+import com.laughing.musicplayer.data.storage.AudioTagEditRequest
+import com.laughing.musicplayer.data.storage.AudioTagEditResult
+import com.laughing.musicplayer.data.storage.TrackMetadataInspector
+import com.laughing.musicplayer.data.storage.TrackTechnicalInfo
 import com.laughing.musicplayer.data.telegram.TelegramAuthUiState
+import com.laughing.musicplayer.data.telegram.TelegramFileResolver
 import com.laughing.musicplayer.data.youtube.YouTubeCollectionResult
 import com.laughing.musicplayer.data.youtube.YouTubeExploreMood
 import com.laughing.musicplayer.data.youtube.YouTubeSearchTab
@@ -310,6 +317,17 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _proxyTestResult = MutableStateFlow<String?>(null)
     val proxyTestResult: StateFlow<String?> = _proxyTestResult.asStateFlow()
 
+    val castUiState: StateFlow<CastUiState> = container.castPlaybackCoordinator.uiState
+
+    private val _sleepCalmLockEnabled = MutableStateFlow(false)
+    val sleepCalmLockEnabled: StateFlow<Boolean> = _sleepCalmLockEnabled.asStateFlow()
+
+    private val _trackTechnicalInfo = MutableStateFlow<TrackTechnicalInfo?>(null)
+    val trackTechnicalInfo: StateFlow<TrackTechnicalInfo?> = _trackTechnicalInfo.asStateFlow()
+
+    private val _isSavingTrackTags = MutableStateFlow(false)
+    val isSavingTrackTags: StateFlow<Boolean> = _isSavingTrackTags.asStateFlow()
+
     init {
         viewModelScope.launch {
             playbackState
@@ -440,12 +458,44 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun playTrack(track: Track, contextList: List<Track>? = null) {
+        val normalizedTrack = normalizeTelegramTrackForPlayback(track)
         if (contextList != null && contextList.isNotEmpty()) {
-            val idx = contextList.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-            container.playerController.playQueue(contextList, idx)
+            val normalizedList = contextList.map { normalizeTelegramTrackForPlayback(it) }
+            val idx = normalizedList.indexOfFirst { it.id == normalizedTrack.id }.coerceAtLeast(0)
+            container.playerController.playQueue(normalizedList, idx)
         } else {
-            container.playerController.playSingleTrack(track)
+            container.playerController.playSingleTrack(normalizedTrack)
         }
+    }
+
+    internal fun normalizeTelegramTrackForPlayback(track: Track): Track {
+        if (track.source != MusicSource.TELEGRAM) return track
+        val parsedUriTarget = track.streamUri?.takeIf { it.isNotBlank() }?.let { raw ->
+            runCatching { TelegramFileResolver.parseTargetFromUri(Uri.parse(raw)) }.getOrNull()
+        }
+        val fileId = track.telegramFileId?.takeIf { it > 0 } ?: parsedUriTarget?.fileId ?: 0
+        val chatId = track.telegramChatId?.takeIf { it != 0L } ?: parsedUriTarget?.chatId
+        val messageId = track.telegramMessageId?.takeIf { it != 0L } ?: parsedUriTarget?.messageId
+        val totalFileSize = maxOf(track.fileSizeBytes, parsedUriTarget?.expectedSize ?: 0L)
+        val normalizedUri = if (fileId > 0) {
+            TelegramFileResolver.buildStreamUri(
+                fileId = fileId,
+                fileSize = totalFileSize,
+                chatId = chatId,
+                messageId = messageId,
+                remoteFileId = track.telegramRemoteFileId,
+                trackId = track.id
+            )
+        } else {
+            track.streamUri
+        }
+        return track.copy(
+            streamUri = normalizedUri,
+            telegramFileId = fileId.takeIf { it > 0 } ?: track.telegramFileId,
+            telegramChatId = chatId,
+            telegramMessageId = messageId,
+            fileSizeBytes = totalFileSize
+        )
     }
 
     fun togglePlayPause() = container.playerController.togglePlayPause()
@@ -490,6 +540,104 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun cancelSleepTimer() {
         container.playerController.cancelSleepTimer()
         _statusToast.value = "Đã hủy hẹn giờ tắt nhạc"
+    }
+
+    fun setSleepFadeOutEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            container.settingsDataStore.setSleepFadeOutEnabled(enabled)
+            _statusToast.value = if (enabled) {
+                "Đã bật giảm dần âm lượng 30 giây khi hẹn tắt"
+            } else {
+                "Đã tắt giảm dần âm lượng khi hẹn giờ"
+            }
+        }
+    }
+
+    fun setSleepCalmLockEnabled(enabled: Boolean) {
+        _sleepCalmLockEnabled.value = enabled
+        _statusToast.value = if (enabled) {
+            "Đã bật khóa thao tác nhầm — giao diện dịu mắt"
+        } else {
+            "Đã mở khóa màn hình Đang phát"
+        }
+    }
+
+    fun startCastDiscovery() {
+        container.castPlaybackCoordinator.startDiscovery()
+    }
+
+    fun stopCastDiscovery() {
+        container.castPlaybackCoordinator.stopDiscovery()
+    }
+
+    fun refreshCastAndAudioOutputs() {
+        container.castPlaybackCoordinator.refreshRoutes()
+        container.castPlaybackCoordinator.refreshAudioOutputs()
+        val castState = container.castPlaybackCoordinator.uiState.value
+        if (castState.connectedDeviceName == null &&
+            (!castState.isCastFrameworkAvailable || castState.castRoutes.isEmpty())
+        ) {
+            _statusToast.value = castState.statusNotice
+                ?: "Không tìm thấy thiết bị Chromecast — hãy chọn Bluetooth hoặc đầu ra âm thanh."
+        }
+    }
+
+    fun selectCastRoute(routeId: String) {
+        _statusToast.value = container.castPlaybackCoordinator.selectCastRoute(routeId)
+    }
+
+    fun disconnectCast() {
+        _statusToast.value = container.castPlaybackCoordinator.disconnectCast()
+    }
+
+    fun openSystemAudioOutput(callerContext: Context) {
+        val opened = container.castPlaybackCoordinator.openSystemAudioOutputSwitcher(callerContext)
+        if (!opened) {
+            _statusToast.value = "Không thể mở bộ chọn đầu ra âm thanh trên thiết bị này"
+        }
+    }
+
+    fun openBluetoothSettings(callerContext: Context) {
+        val opened = container.castPlaybackCoordinator.openBluetoothSettings(callerContext)
+        if (!opened) {
+            _statusToast.value = "Không thể mở cài đặt Bluetooth trên thiết bị này"
+        }
+    }
+
+    fun inspectTrackTechnicalInfo(track: Track) {
+        viewModelScope.launch {
+            _trackTechnicalInfo.value = TrackMetadataInspector.inspect(getApplication(), track)
+        }
+    }
+
+    fun saveOfflineTrackTags(
+        track: Track,
+        request: AudioTagEditRequest,
+        onCompleted: (AudioTagEditResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            _isSavingTrackTags.value = true
+            val result = container.audioTagEditor.updateOfflineTrackTags(track, request)
+            _isSavingTrackTags.value = false
+            when (result) {
+                is AudioTagEditResult.Success -> {
+                    container.playerController.refreshTrackMetadata(result.updatedTrack)
+                    _trackTechnicalInfo.value = TrackMetadataInspector.inspect(getApplication(), result.updatedTrack)
+                    _statusToast.value = result.messageVi
+                }
+                is AudioTagEditResult.NotOfflineTrack -> {
+                    _statusToast.value = result.messageVi
+                }
+                is AudioTagEditResult.Error -> {
+                    _statusToast.value = result.messageVi
+                }
+            }
+            onCompleted(result)
+        }
+    }
+
+    fun postStatusMessage(message: String) {
+        _statusToast.value = message
     }
 
     fun toggleFavorite(track: Track) {

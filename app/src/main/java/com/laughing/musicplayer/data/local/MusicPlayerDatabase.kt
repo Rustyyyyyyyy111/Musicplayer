@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CacheEntryEntity::class,
         ActivityLogEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class MusicPlayerDatabase : RoomDatabase() {
@@ -196,6 +196,15 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tracks ADD COLUMN albumArtist TEXT")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN releaseYear INTEGER")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN channelCount INTEGER NOT NULL DEFAULT 2")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN audioCodec TEXT")
+            }
+        }
+
         fun getInstance(context: Context): MusicPlayerDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -203,7 +212,7 @@ abstract class MusicPlayerDatabase : RoomDatabase() {
                     MusicPlayerDatabase::class.java,
                     "music_player.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { INSTANCE = it }
             }

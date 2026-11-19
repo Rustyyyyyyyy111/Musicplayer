@@ -274,12 +274,6 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                             modifier = Modifier.weight(1f).fillMaxSize(),
                             containerColor = Color.Transparent,
                             contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                            snackbarHost = {
-                                SnackbarHost(
-                                    hostState = snackbarHostState,
-                                    modifier = Modifier.padding(bottom = if (playback.currentTrack != null) 84.dp else 12.dp)
-                                )
-                            },
                             bottomBar = {
                                 if (!isCarMode) {
                                     Column(
@@ -609,6 +603,20 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                             artworkSharedModifier = sheetArtMod
                         )
                     }
+
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(
+                                bottom = when {
+                                    showNowPlaying -> 16.dp
+                                    playback.currentTrack != null -> 148.dp
+                                    else -> 76.dp
+                                }
+                            )
+                    )
                 }
             }
         }

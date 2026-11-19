@@ -1,6 +1,8 @@
 package com.laughing.musicplayer.data.telegram
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import com.laughing.musicplayer.BuildConfig
 import com.laughing.musicplayer.core.model.ProxyConfig
@@ -36,7 +38,8 @@ import kotlin.coroutines.resume
 class TelegramCore(
     private val context: Context,
     private val credentialStore: SecureCredentialStore,
-    private val logger: ActivityLogger
+    private val logger: ActivityLogger,
+    private val rateLimiter: TelegramRateLimiter? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -48,6 +51,9 @@ class TelegramCore(
 
     private val _authState = MutableStateFlow<TdApi.AuthorizationState?>(null)
     val authState: StateFlow<TdApi.AuthorizationState?> = _authState.asStateFlow()
+
+    private val _connectionState = MutableStateFlow<TdApi.ConnectionState?>(null)
+    val connectionState: StateFlow<TdApi.ConnectionState?> = _connectionState.asStateFlow()
 
     private val _fileUpdates = MutableSharedFlow<TdApi.File>(extraBufferCapacity = 128)
     val fileUpdates: SharedFlow<TdApi.File> = _fileUpdates.asSharedFlow()
@@ -108,6 +114,9 @@ class TelegramCore(
                         client = null
                     }
                     logger.log("TG_AUTH", "INFO", "Trạng thái xác thực: ${obj.authorizationState.javaClass.simpleName}")
+                }
+                is TdApi.UpdateConnectionState -> {
+                    _connectionState.value = obj.state
                 }
                 is TdApi.UpdateFile -> {
                     _fileUpdates.tryEmit(obj.file)
@@ -240,6 +249,55 @@ class TelegramCore(
         activeClient.send(TdApi.CancelDownloadFile(fileId, onlyIfPending), null)
     }
 
+    /**
+     * Silently wakes TDLib network & online state after Android Doze / background idle.
+     * Strictly read-only: only refreshes network type, online option, and readiness.
+     */
+    suspend fun reconnectAfterIdle(): Boolean {
+        if (client == null) {
+            initialize(currentAccountSlot)
+        }
+        val activeClient = client ?: return false
+        runCatching {
+            activeClient.send(
+                TdApi.SetOption("online", TdApi.OptionValueBoolean(true)),
+                null
+            )
+            activeClient.send(
+                TdApi.SetNetworkType(detectCurrentNetworkType()),
+                null
+            )
+        }
+        val conn = _connectionState.value
+        if (conn != null && conn !is TdApi.ConnectionStateReady) {
+            logger.log(
+                "TG_RECONNECT",
+                "INFO",
+                "Đánh thức kết nối TDLib sau trạng thái chờ (${conn.javaClass.simpleName})"
+            )
+        }
+        return waitForReady(timeoutMs = 4_500L)
+    }
+
+    private fun detectCurrentNetworkType(): TdApi.NetworkType {
+        return runCatching {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val network = cm?.activeNetwork ?: return TdApi.NetworkTypeOther()
+            val caps = cm.getNetworkCapabilities(network) ?: return TdApi.NetworkTypeOther()
+            when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> TdApi.NetworkTypeWiFi()
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> {
+                    if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING)) {
+                        TdApi.NetworkTypeMobile()
+                    } else {
+                        TdApi.NetworkTypeMobileRoaming()
+                    }
+                }
+                else -> TdApi.NetworkTypeOther()
+            }
+        }.getOrDefault(TdApi.NetworkTypeOther())
+    }
+
     suspend fun <T : TdApi.Object> sendQuery(
         function: TdApi.Function<T>,
         timeoutMs: Long = 7_500L
@@ -254,6 +312,7 @@ class TelegramCore(
                         if (!cont.isActive) return@send
                         when (obj) {
                             is TdApi.Error -> {
+                                rateLimiter?.reportTdErrorIfRateLimitedAsync(obj.code, obj.message)
                                 cont.resume(Result.failure(TdLibException(obj.code, obj.message)))
                             }
                             else -> {

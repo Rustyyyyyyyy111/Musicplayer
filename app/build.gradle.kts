@@ -120,6 +120,8 @@ dependencies {
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.datasource)
   implementation(libs.androidx.media3.extractor)
+  implementation(libs.androidx.media3.cast)
+  implementation(libs.androidx.mediarouter)
   implementation(libs.moshi.kotlin)
   implementation(libs.newpipe.extractor)
   implementation(libs.okhttp)

@@ -178,7 +178,11 @@ data class Track(
     val lastPlayedEpochMs: Long = 0L,
     val playCount: Int = 0,
     val loudnessGainDb: Float = 0f,
-    val bpm: Int = 0
+    val bpm: Int = 0,
+    val albumArtist: String? = null,
+    val releaseYear: Int? = null,
+    val channelCount: Int = 2,
+    val audioCodec: String? = null
 )
 
 data class ArtistGroup(

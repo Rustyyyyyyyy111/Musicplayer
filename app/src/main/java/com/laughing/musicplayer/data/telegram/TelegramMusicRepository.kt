@@ -38,7 +38,8 @@ class TelegramMusicRepository(
     private val trackDao: TrackDao,
     private val downloadCacheDao: DownloadCacheDao,
     private val storageManager: UnifiedStorageManager,
-    private val logger: ActivityLogger
+    private val logger: ActivityLogger,
+    private val rateLimiter: TelegramRateLimiter? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeDownloadJobs = ConcurrentHashMap<String, Job>()
@@ -61,12 +62,53 @@ class TelegramMusicRepository(
         }
     }
 
-    suspend fun syncSelectedSources(fullRescan: Boolean = false): Int {
-        return messageScanner.scanSelectedSources(fullRescan)
+    suspend fun getFloodWaitRemainingSeconds(): Long {
+        val ms = rateLimiter?.getRemainingFloodWaitMs() ?: 0L
+        return if (ms > 0L) ((ms + 999L) / 1000L) else 0L
+    }
+
+    suspend fun syncSelectedSources(
+        fullRescan: Boolean = false,
+        isAutomatic: Boolean = false
+    ): Int {
+        if (rateLimiter?.isCircuitBreakerOpen() == true) {
+            val sec = getFloodWaitRemainingSeconds()
+            logger.log("ANTI_FLOOD", "WARN", "Đang trong thời gian chờ FLOOD_WAIT (${sec}s), bỏ qua quét nguồn Telegram.")
+            return 0
+        }
+        if (isAutomatic && rateLimiter?.canRunAutomaticSync() == false) {
+            val minLeft = ((rateLimiter.getRemainingAutoSyncCooldownMs() / 60_000L) + 1L)
+            logger.log("ANTI_FLOOD", "INFO", "Bỏ qua tự đồng bộ (đang giữ nhịp cooldown chống ban ~${minLeft} phút).")
+            return 0
+        }
+        val runBlock: suspend () -> Int = {
+            if (isAutomatic && rateLimiter?.canRunAutomaticSync() == false) {
+                0
+            } else {
+                val count = messageScanner.scanSelectedSources(fullRescan)
+                if (rateLimiter?.isCircuitBreakerOpen() != true) {
+                    rateLimiter?.markAutoSyncCompleted()
+                }
+                count
+            }
+        }
+        return rateLimiter?.withExclusiveSync(runBlock) ?: runBlock()
+    }
+
+    fun triggerBackgroundDeltaSyncIfCooldownElapsed() {
+        scope.launch {
+            if (rateLimiter?.canRunAutomaticSync() == false) return@launch
+            if (!core.waitForReady(timeoutMs = 3_500L)) return@launch
+            syncSelectedSources(fullRescan = false, isAutomatic = true)
+        }
     }
 
     suspend fun scanSingleChat(chatId: Long): Int {
-        return messageScanner.scanChat(chatId, fullRescan = false)
+        if (rateLimiter?.isCircuitBreakerOpen() == true) return 0
+        val runBlock: suspend () -> Int = {
+            messageScanner.scanChat(chatId, fullRescan = false)
+        }
+        return rateLimiter?.withExclusiveSync(runBlock) ?: runBlock()
     }
 
     fun startOfflineDownload(track: Track) {
@@ -328,7 +370,10 @@ class TelegramSyncWorker(
     override suspend fun doWork(): Result {
         val app = applicationContext as? MusicPlayerApplication ?: return Result.success()
         return runCatching {
-            app.container.telegramMusicRepository.syncSelectedSources(fullRescan = false)
+            app.container.telegramMusicRepository.syncSelectedSources(
+                fullRescan = false,
+                isAutomatic = true
+            )
             Result.success()
         }.getOrElse {
             Result.retry()

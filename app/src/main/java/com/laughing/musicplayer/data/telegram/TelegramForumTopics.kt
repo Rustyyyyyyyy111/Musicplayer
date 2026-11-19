@@ -13,8 +13,12 @@ class TelegramForumTopics(
     private val core: TelegramCore,
     private val telegramDao: TelegramDao,
     private val trackDao: TrackDao,
-    private val logger: ActivityLogger
+    private val logger: ActivityLogger,
+    private val rateLimiter: TelegramRateLimiter? = null
 ) {
+    private suspend fun <T> throttled(block: suspend () -> T): T {
+        return rateLimiter?.withThrottledMetadataCall(block) ?: block()
+    }
     fun observeAllTopics(): Flow<List<TelegramTopicItem>> =
         telegramDao.observeAllTopics().map { list -> list.map { it.toDomain() } }
 
@@ -23,27 +27,41 @@ class TelegramForumTopics(
 
     suspend fun isForumSupergroup(chat: TdApi.Chat): Boolean {
         val sgType = chat.type as? TdApi.ChatTypeSupergroup ?: return false
-        val sg = core.sendQuery(TdApi.GetSupergroup(sgType.supergroupId)).getOrNull() ?: return false
+        val sg = runCatching {
+            throttled { core.sendQuery(TdApi.GetSupergroup(sgType.supergroupId)).getOrNull() }
+        }.getOrNull() ?: return false
         return sg.isForum
     }
 
     suspend fun fetchForumTopics(chatId: Long): List<TelegramTopicItem> {
+        if (rateLimiter?.isCircuitBreakerOpen() == true) {
+            logger.log("ANTI_FLOOD", "WARN", "Bỏ qua tải Forum Topics do đang trong thời gian chờ FLOOD_WAIT")
+            return emptyList()
+        }
         val collected = mutableListOf<TelegramTopicItem>()
         var offsetDate = 0
         var offsetMessageId = 0L
         var offsetForumTopicId = 0
 
-        while (true) {
-            val result = core.sendQuery(
-                TdApi.GetForumTopics(
-                    chatId,
-                    "",
-                    offsetDate,
-                    offsetMessageId,
-                    offsetForumTopicId,
-                    100
-                )
-            ).getOrNull() ?: break
+        try {
+            while (true) {
+                val result = throttled {
+                    core.sendQuery(
+                        TdApi.GetForumTopics(
+                            chatId,
+                            "",
+                            offsetDate,
+                            offsetMessageId,
+                            offsetForumTopicId,
+                            100
+                        )
+                    )
+                }.getOrElse { err ->
+                    if (err is TelegramCore.TdLibException) {
+                        rateLimiter?.reportTdErrorIfRateLimited(err.code, err.message)
+                    }
+                    null
+                } ?: break
 
             val topics = result.topics
             if (topics.isEmpty()) break
@@ -68,6 +86,9 @@ class TelegramForumTopics(
             offsetDate = result.nextOffsetDate
             offsetMessageId = result.nextOffsetMessageId
             offsetForumTopicId = result.nextOffsetForumTopicId
+        }
+        } catch (_: TelegramRateLimiter.FloodWaitActiveException) {
+            logger.log("ANTI_FLOOD", "WARN", "Tạm dừng tải Forum Topics do FLOOD_WAIT")
         }
 
         if (collected.isNotEmpty()) {
@@ -94,9 +115,19 @@ class TelegramForumTopics(
         fromMessageId: Long = 0L,
         limit: Int = 50
     ): List<TdApi.Message> {
-        val response = core.sendQuery(
-            TdApi.GetForumTopicHistory(chatId, forumTopicId, fromMessageId, 0, limit)
-        ).getOrElse { err ->
+        if (rateLimiter?.isCircuitBreakerOpen() == true) return emptyList()
+        val response = try {
+            throttled {
+                core.sendQuery(
+                    TdApi.GetForumTopicHistory(chatId, forumTopicId, fromMessageId, 0, limit)
+                )
+            }
+        } catch (_: TelegramRateLimiter.FloodWaitActiveException) {
+            return emptyList()
+        }.getOrElse { err ->
+            if (err is TelegramCore.TdLibException) {
+                rateLimiter?.reportTdErrorIfRateLimited(err.code, err.message)
+            }
             logger.log("TG_TOPICS", "WARN", "Lỗi lấy tin nhắn topic id=$forumTopicId: ${err.message}")
             return emptyList()
         }

@@ -64,7 +64,11 @@ data class TrackEntity(
     val playCount: Int,
     val loudnessGainDb: Float,
     val bpm: Int = 0,
-    val normalizedSearchBlob: String
+    val normalizedSearchBlob: String,
+    val albumArtist: String? = null,
+    val releaseYear: Int? = null,
+    val channelCount: Int = 2,
+    val audioCodec: String? = null
 ) {
     fun toDomain(): Track = Track(
         id = id,
@@ -104,7 +108,11 @@ data class TrackEntity(
         lastPlayedEpochMs = lastPlayedEpochMs,
         playCount = playCount,
         loudnessGainDb = loudnessGainDb,
-        bpm = bpm
+        bpm = bpm,
+        albumArtist = albumArtist,
+        releaseYear = releaseYear,
+        channelCount = channelCount,
+        audioCodec = audioCodec
     )
 }
 
@@ -147,7 +155,11 @@ fun Track.toEntity(searchBlob: String): TrackEntity = TrackEntity(
     playCount = playCount,
     loudnessGainDb = loudnessGainDb,
     bpm = bpm,
-    normalizedSearchBlob = searchBlob
+    normalizedSearchBlob = searchBlob,
+    albumArtist = albumArtist,
+    releaseYear = releaseYear,
+    channelCount = channelCount,
+    audioCodec = audioCodec
 )
 
 @Entity(tableName = "telegram_sources")

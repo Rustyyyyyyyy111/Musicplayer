@@ -41,7 +41,10 @@ data class UserPreferences(
     val lastPositionMs: Long = 0L,
     val activeTelegramAccountId: Int = 0,
     val showLyricsOnLockScreen: Boolean = true,
-    val isYouTubeLoggedIn: Boolean = false
+    val isYouTubeLoggedIn: Boolean = false,
+    val floodWaitUntilEpochMs: Long = 0L,
+    val lastTelegramAutoSyncEpochMs: Long = 0L,
+    val sleepFadeOutEnabled: Boolean = true
 )
 
 class SettingsDataStore(
@@ -75,6 +78,9 @@ class SettingsDataStore(
         val ACTIVE_TG_ACCOUNT = intPreferencesKey("active_tg_account")
         val SHOW_LYRICS_LOCKSCREEN = booleanPreferencesKey("show_lyrics_lockscreen")
         val YT_LOGGED_IN = booleanPreferencesKey("yt_logged_in")
+        val TG_FLOOD_WAIT_UNTIL_MS = longPreferencesKey("tg_flood_wait_until_ms")
+        val TG_LAST_AUTO_SYNC_MS = longPreferencesKey("tg_last_auto_sync_ms")
+        val SLEEP_FADEOUT_ENABLED = booleanPreferencesKey("sleep_fadeout_enabled")
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.musicPrefsDataStore.data.map { prefs ->
@@ -122,7 +128,10 @@ class SettingsDataStore(
             lastPositionMs = prefs[Keys.LAST_POSITION_MS] ?: 0L,
             activeTelegramAccountId = prefs[Keys.ACTIVE_TG_ACCOUNT] ?: 0,
             showLyricsOnLockScreen = prefs[Keys.SHOW_LYRICS_LOCKSCREEN] ?: true,
-            isYouTubeLoggedIn = prefs[Keys.YT_LOGGED_IN] ?: false
+            isYouTubeLoggedIn = prefs[Keys.YT_LOGGED_IN] ?: false,
+            floodWaitUntilEpochMs = prefs[Keys.TG_FLOOD_WAIT_UNTIL_MS] ?: 0L,
+            lastTelegramAutoSyncEpochMs = prefs[Keys.TG_LAST_AUTO_SYNC_MS] ?: 0L,
+            sleepFadeOutEnabled = prefs[Keys.SLEEP_FADEOUT_ENABLED] ?: true
         )
     }
 
@@ -210,5 +219,17 @@ class SettingsDataStore(
 
     suspend fun setYouTubeLoggedIn(loggedIn: Boolean) {
         context.musicPrefsDataStore.edit { it[Keys.YT_LOGGED_IN] = loggedIn }
+    }
+
+    suspend fun setTelegramFloodWaitUntil(untilEpochMs: Long) {
+        context.musicPrefsDataStore.edit { it[Keys.TG_FLOOD_WAIT_UNTIL_MS] = untilEpochMs }
+    }
+
+    suspend fun setLastTelegramAutoSyncEpochMs(epochMs: Long) {
+        context.musicPrefsDataStore.edit { it[Keys.TG_LAST_AUTO_SYNC_MS] = epochMs }
+    }
+
+    suspend fun setSleepFadeOutEnabled(enabled: Boolean) {
+        context.musicPrefsDataStore.edit { it[Keys.SLEEP_FADEOUT_ENABLED] = enabled }
     }
 }

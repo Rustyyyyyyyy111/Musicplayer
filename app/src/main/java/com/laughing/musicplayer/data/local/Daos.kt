@@ -122,6 +122,29 @@ interface TrackDao {
     @Query("UPDATE tracks SET genre = :genre, genreManuallyEdited = 1 WHERE id = :trackId")
     suspend fun updateGenre(trackId: String, genre: String)
 
+    @Query("""
+        UPDATE tracks SET
+            title = :title,
+            artist = :artist,
+            album = :album,
+            albumArtist = :albumArtist,
+            genre = :genre,
+            genreManuallyEdited = 1,
+            releaseYear = :releaseYear,
+            normalizedSearchBlob = :searchBlob
+        WHERE id = :trackId
+    """)
+    suspend fun updateEditableMetadata(
+        trackId: String,
+        title: String,
+        artist: String,
+        album: String,
+        albumArtist: String?,
+        genre: String,
+        releaseYear: Int?,
+        searchBlob: String
+    )
+
     @Query("UPDATE tracks SET lastPlayedEpochMs = :timestamp, playCount = playCount + 1 WHERE id = :trackId")
     suspend fun markPlayed(trackId: String, timestamp: Long)
 

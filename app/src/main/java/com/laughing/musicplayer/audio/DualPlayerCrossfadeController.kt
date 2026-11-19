@@ -2,6 +2,7 @@ package com.laughing.musicplayer.audio
 
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.AudioAttributes
@@ -71,6 +72,8 @@ data class PlaybackState(
     val sleepTimerRemainingMs: Long = 0L,
     val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
     val sleepTimerRemainingTracks: Int = 0,
+    val sleepFadeOutEnabled: Boolean = true,
+    val sleepFadeOutActive: Boolean = false,
     val effectiveReplayGainDb: Float = 0f,
     val crossfadeActive: Boolean = false,
     val errorMessage: String? = null
@@ -166,6 +169,7 @@ class DualPlayerCrossfadeController(
 
     private var crossfadeSeconds = 2
     private var autoPlayNext = true
+    private var sleepFadeOutEnabled = true
     private var isCrossfading = false
     private var tickerJob: Job? = null
     private var sleepTimerJob: Job? = null
@@ -222,12 +226,19 @@ class DualPlayerCrossfadeController(
             settingsDataStore.preferencesFlow.collect { prefs ->
                 crossfadeSeconds = prefs.crossfadeSeconds
                 autoPlayNext = prefs.autoPlayNext
+                sleepFadeOutEnabled = prefs.sleepFadeOutEnabled
                 val currentTrack = _playbackState.value.currentTrack
                 applyTrackDspSettings(currentTrack, prefs.eqState)
                 _playbackState.value = _playbackState.value.copy(
                     shuffleEnabled = prefs.shuffleEnabled,
-                    repeatMode = prefs.repeatMode
+                    repeatMode = prefs.repeatMode,
+                    sleepFadeOutEnabled = prefs.sleepFadeOutEnabled
                 )
+                if (!prefs.sleepFadeOutEnabled && _playbackState.value.sleepFadeOutActive) {
+                    activePlayer.volume = 1f
+                    standbyPlayer.volume = 1f
+                    _playbackState.value = _playbackState.value.copy(sleepFadeOutActive = false)
+                }
             }
         }
     }
@@ -349,6 +360,9 @@ class DualPlayerCrossfadeController(
         if (p.playbackState == Player.STATE_ENDED) {
             p.seekTo(0L)
         }
+        if (!_playbackState.value.sleepFadeOutActive) {
+            p.volume = 1f
+        }
         onEnsureMediaSessionConnected?.invoke()
         p.play()
     }
@@ -422,18 +436,29 @@ class DualPlayerCrossfadeController(
             return
         }
         var remaining = minutes * 60_000L
+        if (!sleepFadeOutEnabled || remaining > SLEEP_FADEOUT_DURATION_MS) {
+            activePlayer.volume = 1f
+        }
         _playbackState.value = _playbackState.value.copy(
             sleepTimerMode = SleepTimerMode.AFTER_MINUTES,
             sleepTimerRemainingMs = remaining,
-            sleepTimerRemainingTracks = 0
+            sleepTimerRemainingTracks = 0,
+            sleepFadeOutActive = false
         )
-        logger.log("SLEEP_TIMER", "INFO", "Hẹn giờ tắt nhạc sau $minutes phút")
+        logger.log("SLEEP_TIMER", "INFO", "Hẹn giờ tắt nhạc sau $minutes phút (giảm dần âm lượng: $sleepFadeOutEnabled)")
         sleepTimerJob = scope.launch {
             while (remaining > 0L) {
-                delay(1000L)
-                remaining -= 1000L
+                val stepMs = if (sleepFadeOutEnabled && remaining <= SLEEP_FADEOUT_DURATION_MS) 250L else 1000L
+                delay(stepMs)
+                remaining = (remaining - stepMs).coerceAtLeast(0L)
+                val fadingNow = sleepFadeOutEnabled && remaining in 1L..SLEEP_FADEOUT_DURATION_MS
+                if (fadingNow && !isCrossfading) {
+                    val norm = (remaining.toFloat() / SLEEP_FADEOUT_DURATION_MS.toFloat()).coerceIn(0f, 1f)
+                    activePlayer.volume = (norm * norm).coerceIn(0.02f, 1f)
+                }
                 _playbackState.value = _playbackState.value.copy(
-                    sleepTimerRemainingMs = remaining.coerceAtLeast(0L)
+                    sleepTimerRemainingMs = remaining,
+                    sleepFadeOutActive = fadingNow
                 )
             }
             triggerSleepTimerPause("Hẹn giờ tắt nhạc ($minutes phút) đã kích hoạt")
@@ -442,10 +467,12 @@ class DualPlayerCrossfadeController(
 
     fun setSleepTimerEndOfTrack() {
         sleepTimerJob?.cancel()
+        activePlayer.volume = 1f
         _playbackState.value = _playbackState.value.copy(
             sleepTimerMode = SleepTimerMode.END_OF_CURRENT_TRACK,
             sleepTimerRemainingMs = 0L,
-            sleepTimerRemainingTracks = 1
+            sleepTimerRemainingTracks = 1,
+            sleepFadeOutActive = false
         )
         logger.log("SLEEP_TIMER", "INFO", "Hẹn giờ tắt nhạc sau bài hát hiện tại")
     }
@@ -456,33 +483,51 @@ class DualPlayerCrossfadeController(
             cancelSleepTimer()
             return
         }
+        activePlayer.volume = 1f
         _playbackState.value = _playbackState.value.copy(
             sleepTimerMode = SleepTimerMode.AFTER_N_TRACKS,
             sleepTimerRemainingMs = 0L,
-            sleepTimerRemainingTracks = trackCount
+            sleepTimerRemainingTracks = trackCount,
+            sleepFadeOutActive = false
         )
         logger.log("SLEEP_TIMER", "INFO", "Hẹn giờ tắt nhạc sau $trackCount bài tiếp theo")
     }
 
     fun cancelSleepTimer() {
         sleepTimerJob?.cancel()
+        activePlayer.volume = 1f
+        standbyPlayer.volume = 1f
         _playbackState.value = _playbackState.value.copy(
             sleepTimerMode = SleepTimerMode.OFF,
             sleepTimerRemainingMs = 0L,
-            sleepTimerRemainingTracks = 0
+            sleepTimerRemainingTracks = 0,
+            sleepFadeOutActive = false
         )
     }
 
     private fun triggerSleepTimerPause(logMessage: String) {
         activePlayer.pause()
         standbyPlayer.pause()
+        activePlayer.volume = 1f
+        standbyPlayer.volume = 1f
         _playbackState.value = _playbackState.value.copy(
             isPlaying = false,
             sleepTimerMode = SleepTimerMode.OFF,
             sleepTimerRemainingMs = 0L,
-            sleepTimerRemainingTracks = 0
+            sleepTimerRemainingTracks = 0,
+            sleepFadeOutActive = false
         )
         logger.log("PLAYER", "INFO", logMessage)
+    }
+
+    fun refreshTrackMetadata(updatedTrack: Track) {
+        val state = _playbackState.value
+        val updatedQueue = state.queue.map { if (it.id == updatedTrack.id) updatedTrack else it }
+        val updatedCurrent = if (state.currentTrack?.id == updatedTrack.id) updatedTrack else state.currentTrack
+        _playbackState.value = state.copy(
+            currentTrack = updatedCurrent,
+            queue = updatedQueue
+        )
     }
 
     /**
@@ -557,7 +602,8 @@ class DualPlayerCrossfadeController(
             isBuffering = true,
             isPlaying = false,
             errorMessage = null,
-            crossfadeActive = false
+            crossfadeActive = false,
+            sleepFadeOutActive = false
         )
 
         activePlayJob = scope.launch {
@@ -751,7 +797,28 @@ class DualPlayerCrossfadeController(
         }
         if (track.source == MusicSource.TELEGRAM) {
             val latestTrack = withContext(Dispatchers.IO) {
-                trackDao.getTrackById(track.id)?.toDomain() ?: track
+                val dbTrack = trackDao.getTrackById(track.id)?.toDomain()
+                    ?: if (track.telegramChatId != null && track.telegramMessageId != null) {
+                        trackDao.findByTelegramMessage(track.telegramChatId, track.telegramMessageId)?.toDomain()
+                    } else {
+                        null
+                    }
+                if (dbTrack != null) {
+                    track.copy(
+                        localPath = dbTrack.localPath ?: track.localPath,
+                        streamUri = dbTrack.streamUri ?: track.streamUri,
+                        telegramChatId = dbTrack.telegramChatId ?: track.telegramChatId,
+                        telegramMessageId = dbTrack.telegramMessageId ?: track.telegramMessageId,
+                        telegramFileId = dbTrack.telegramFileId ?: track.telegramFileId,
+                        telegramRemoteFileId = dbTrack.telegramRemoteFileId ?: track.telegramRemoteFileId,
+                        telegramRemoteUniqueId = dbTrack.telegramRemoteUniqueId ?: track.telegramRemoteUniqueId,
+                        mimeType = dbTrack.mimeType ?: track.mimeType,
+                        fileSizeBytes = maxOf(dbTrack.fileSizeBytes, track.fileSizeBytes),
+                        artworkUri = dbTrack.artworkUri ?: track.artworkUri
+                    )
+                } else {
+                    track
+                }
             }
             val progressive = withContext(Dispatchers.IO) {
                 telegramFileResolver.resolveForProgressiveStream(latestTrack)
@@ -781,12 +848,14 @@ class DualPlayerCrossfadeController(
         return if (raw.startsWith("/")) Uri.fromFile(File(raw)) else Uri.parse(raw)
     }
 
-    private fun buildMediaItem(track: Track, uri: String, mimeType: String? = null): MediaItem {
+    internal fun buildMediaItem(track: Track, uri: String, mimeType: String? = null): MediaItem {
+        val extras = buildMediaItemExtras(track, uri)
         val metadata = MediaMetadata.Builder()
             .setTitle(track.title)
             .setArtist(track.artist)
             .setAlbumTitle(track.album)
             .setArtworkUri(toArtworkUri(track.artworkUri))
+            .setExtras(extras)
             .build()
         return MediaItem.Builder()
             .setMediaId(track.id)
@@ -923,6 +992,20 @@ class DualPlayerCrossfadeController(
                 val shouldStopAfterThisTrack = st.sleepTimerMode == SleepTimerMode.END_OF_CURRENT_TRACK ||
                     (st.sleepTimerMode == SleepTimerMode.AFTER_N_TRACKS && st.sleepTimerRemainingTracks <= 1)
 
+                if (shouldStopAfterThisTrack && sleepFadeOutEnabled && !isCrossfading && p.isPlaying && dur > SLEEP_FADEOUT_DURATION_MS + 3_000L) {
+                    val remaining = dur - pos
+                    if (remaining in 100L..SLEEP_FADEOUT_DURATION_MS) {
+                        val norm = (remaining.toFloat() / SLEEP_FADEOUT_DURATION_MS.toFloat()).coerceIn(0f, 1f)
+                        p.volume = (norm * norm).coerceIn(0.02f, 1f)
+                        if (!st.sleepFadeOutActive) {
+                            _playbackState.value = _playbackState.value.copy(sleepFadeOutActive = true)
+                        }
+                    } else if (remaining > SLEEP_FADEOUT_DURATION_MS && st.sleepFadeOutActive) {
+                        p.volume = 1f
+                        _playbackState.value = _playbackState.value.copy(sleepFadeOutActive = false)
+                    }
+                }
+
                 val fadeMs = crossfadeSeconds * 1000L
                 if (!shouldStopAfterThisTrack && fadeMs > 0L && p.isPlaying && !isCrossfading && dur > fadeMs + 2000L) {
                     val remaining = dur - pos
@@ -1031,5 +1114,27 @@ class DualPlayerCrossfadeController(
         const val HTTP_READ_TIMEOUT_MS = 8_000
         const val RESOLVE_TIMEOUT_MS = 7_500L
         const val BUFFERING_STALL_TIMEOUT_MS = 7_500L
+        const val SLEEP_FADEOUT_DURATION_MS = 30_000L
+
+        const val EXTRA_URI = "uri"
+        const val EXTRA_FILE_ID = "fileId"
+        const val EXTRA_CHAT_ID = "chatId"
+        const val EXTRA_MESSAGE_ID = "messageId"
+        const val EXTRA_TOTAL_FILE_SIZE = "totalFileSize"
+
+        fun buildMediaItemExtras(track: Track, uri: String): Bundle {
+            val parsedTarget = runCatching { TelegramFileResolver.parseTargetFromUri(Uri.parse(uri)) }.getOrNull()
+            val resolvedFileId = track.telegramFileId?.takeIf { it > 0 } ?: parsedTarget?.fileId ?: 0
+            val resolvedChatId = track.telegramChatId?.takeIf { it != 0L } ?: parsedTarget?.chatId ?: 0L
+            val resolvedMessageId = track.telegramMessageId?.takeIf { it != 0L } ?: parsedTarget?.messageId ?: 0L
+            val resolvedTotalSize = maxOf(track.fileSizeBytes, parsedTarget?.expectedSize ?: 0L)
+            return Bundle().apply {
+                putString(EXTRA_URI, uri)
+                putInt(EXTRA_FILE_ID, resolvedFileId)
+                putLong(EXTRA_CHAT_ID, resolvedChatId)
+                putLong(EXTRA_MESSAGE_ID, resolvedMessageId)
+                putLong(EXTRA_TOTAL_FILE_SIZE, resolvedTotalSize)
+            }
+        }
     }
 }

@@ -16,6 +16,11 @@ data class AudioSpecProbeResult(
     val title: String? = null,
     val artist: String? = null,
     val album: String? = null,
+    val albumArtist: String? = null,
+    val releaseYear: Int? = null,
+    val genreName: String? = null,
+    val channelCount: Int = 2,
+    val audioCodec: String? = null,
     val embeddedArtwork: ByteArray? = null
 )
 
@@ -170,9 +175,14 @@ object AudioFormatDetector {
         var title: String? = null
         var artist: String? = null
         var album: String? = null
+        var albumArtist: String? = null
+        var releaseYear: Int? = null
+        var genreName: String? = null
+        var channelCount = 2
+        var audioCodec: String? = null
         var artwork: ByteArray? = null
 
-        // 1. Parse FLAC STREAMINFO directly if FLAC (gives exact sample rate and bit depth)
+        // 1. Parse FLAC STREAMINFO directly if FLAC (gives exact sample rate, bit depth, channels)
         if (format == AudioFormat.FLAC) {
             runCatching {
                 val buf = ByteArray(42)
@@ -187,9 +197,12 @@ object AudioFormatDetector {
                     val b20 = buf[20].toInt() and 0xFF
                     val b21 = buf[21].toInt() and 0xFF
                     val sr = (b18 shl 12) or (b19 shl 4) or (b20 ushr 4)
+                    val channels = ((b20 ushr 1) and 0x07) + 1
                     val bps = (((b20 and 0x01) shl 4) or (b21 ushr 4)) + 1
                     if (sr in 8000..384000) sampleRate = sr
+                    if (channels in 1..8) channelCount = channels
                     if (bps in 8..32) bitDepth = bps
+                    audioCodec = "FLAC (Lossless)"
                 }
             }
         }
@@ -201,6 +214,11 @@ object AudioFormatDetector {
             title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }
             artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() }
             album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)?.takeIf { it.isNotBlank() }
+            albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)?.takeIf { it.isNotBlank() }
+            genreName = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)?.takeIf { it.isNotBlank() }
+            val yearRaw = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
+                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
+            releaseYear = yearRaw?.trim()?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
             durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
             bitrateKbps = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull() ?: 0) / 1000
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && sampleRate == 0) {
@@ -212,37 +230,41 @@ object AudioFormatDetector {
         }
         runCatching { retriever.release() }
 
-        // 3. Fallback MediaExtractor for sample rate / pcm bit depth
-        if (sampleRate == 0 || (format.isLossless && bitDepth == null)) {
-            val extractor = MediaExtractor()
-            runCatching {
-                extractor.setDataSource(file.absolutePath)
-                for (i in 0 until extractor.trackCount) {
-                    val mf = extractor.getTrackFormat(i)
-                    val mime = mf.getString(MediaFormat.KEY_MIME).orEmpty()
-                    if (mime.startsWith("audio/")) {
-                        if (sampleRate == 0 && mf.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                            sampleRate = mf.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        }
-                        if (bitrateKbps == 0 && mf.containsKey(MediaFormat.KEY_BIT_RATE)) {
-                            bitrateKbps = mf.getInteger(MediaFormat.KEY_BIT_RATE) / 1000
-                        }
-                        if (bitDepth == null && mf.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
-                            bitDepth = when (mf.getInteger(MediaFormat.KEY_PCM_ENCODING)) {
-                                AndroidAudioFormat.ENCODING_PCM_8BIT -> 8
-                                AndroidAudioFormat.ENCODING_PCM_16BIT -> 16
-                                AndroidAudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
-                                AndroidAudioFormat.ENCODING_PCM_32BIT,
-                                AndroidAudioFormat.ENCODING_PCM_FLOAT -> 32
-                                else -> null
-                            }
-                        }
-                        break
+        // 3. Fallback MediaExtractor for sample rate, channels, codec MIME, and pcm bit depth
+        val extractor = MediaExtractor()
+        runCatching {
+            extractor.setDataSource(file.absolutePath)
+            for (i in 0 until extractor.trackCount) {
+                val mf = extractor.getTrackFormat(i)
+                val mime = mf.getString(MediaFormat.KEY_MIME).orEmpty()
+                if (mime.startsWith("audio/")) {
+                    if (sampleRate == 0 && mf.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        sampleRate = mf.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     }
+                    if (mf.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        channelCount = mf.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceIn(1, 16)
+                    }
+                    if (audioCodec == null) {
+                        audioCodec = mapMimeToCodecLabel(mime, format)
+                    }
+                    if (bitrateKbps == 0 && mf.containsKey(MediaFormat.KEY_BIT_RATE)) {
+                        bitrateKbps = mf.getInteger(MediaFormat.KEY_BIT_RATE) / 1000
+                    }
+                    if (bitDepth == null && mf.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        bitDepth = when (mf.getInteger(MediaFormat.KEY_PCM_ENCODING)) {
+                            AndroidAudioFormat.ENCODING_PCM_8BIT -> 8
+                            AndroidAudioFormat.ENCODING_PCM_16BIT -> 16
+                            AndroidAudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
+                            AndroidAudioFormat.ENCODING_PCM_32BIT,
+                            AndroidAudioFormat.ENCODING_PCM_FLOAT -> 32
+                            else -> null
+                        }
+                    }
+                    break
                 }
             }
-            runCatching { extractor.release() }
         }
+        runCatching { extractor.release() }
 
         // 4. Estimate bitrate from file size & duration when container omits it
         if (bitrateKbps <= 0 && durationMs > 1000L && file.length() > 0L) {
@@ -257,7 +279,40 @@ object AudioFormatDetector {
             title = title,
             artist = artist,
             album = album,
+            albumArtist = albumArtist,
+            releaseYear = releaseYear,
+            genreName = genreName,
+            channelCount = channelCount,
+            audioCodec = audioCodec ?: defaultCodecLabelFor(format),
             embeddedArtwork = artwork
         )
+    }
+
+    fun mapMimeToCodecLabel(mime: String?, format: AudioFormat): String {
+        val m = mime.orEmpty().lowercase()
+        return when {
+            m.contains("flac") -> "FLAC (Lossless)"
+            m.contains("alac") -> "ALAC (Apple Lossless)"
+            m.contains("mp4a-latm") || m.contains("aac") -> "AAC (MP4A)"
+            m.contains("mpeg") -> "MPEG Audio Layer III (MP3)"
+            m.contains("opus") -> "Opus"
+            m.contains("vorbis") -> "Ogg Vorbis"
+            m.contains("raw") -> "PCM (WAV)"
+            m.contains("ape") -> "Monkey's Audio (APE)"
+            else -> defaultCodecLabelFor(format)
+        }
+    }
+
+    fun defaultCodecLabelFor(format: AudioFormat): String = when (format) {
+        AudioFormat.FLAC -> "FLAC (Lossless)"
+        AudioFormat.ALAC -> "ALAC (Apple Lossless)"
+        AudioFormat.WAV -> "PCM (WAV)"
+        AudioFormat.MP3 -> "MPEG Audio Layer III (MP3)"
+        AudioFormat.M4A -> "AAC / M4A"
+        AudioFormat.AAC -> "AAC (ADTS)"
+        AudioFormat.OGG -> "Ogg Vorbis"
+        AudioFormat.OPUS -> "Opus"
+        AudioFormat.APE -> "Monkey's Audio (APE)"
+        AudioFormat.OTHER -> "Audio"
     }
 }

@@ -16,6 +16,7 @@ import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,13 +37,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
@@ -52,7 +57,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.rounded.OfflinePin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -71,9 +75,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,12 +89,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -97,8 +107,15 @@ import com.laughing.musicplayer.core.model.DownloadStatus
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.RepeatMode
 import com.laughing.musicplayer.core.model.SleepTimerMode
+import com.laughing.musicplayer.data.storage.AudioTagEditResult
 import com.laughing.musicplayer.ui.components.ArtworkImage
 import com.laughing.musicplayer.ui.components.AudioQualityBadge
+import com.laughing.musicplayer.ui.components.CastPickerSheet
+import com.laughing.musicplayer.ui.components.EditTagsSheet
+import com.laughing.musicplayer.ui.components.NowPlayingMoreSheet
+import com.laughing.musicplayer.ui.components.SleepModeSheet
+import com.laughing.musicplayer.ui.components.SleepTimerAppleSheet
+import com.laughing.musicplayer.ui.components.TrackInfoSheet
 import com.laughing.musicplayer.ui.components.formatDurationMs
 import com.laughing.musicplayer.ui.theme.AppleMotion
 import com.laughing.musicplayer.ui.theme.LiquidGlassBase
@@ -107,6 +124,8 @@ import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.theme.applePressScale
 import com.laughing.musicplayer.ui.theme.rememberReducedMotionEnabled
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,14 +135,17 @@ fun NowPlayingSheet(
     onOpenEqualizer: () -> Unit,
     artworkSharedModifier: Modifier = Modifier
 ) {
-    BackHandler { onDismiss() }
-
+    val context = LocalContext.current
     val colors = LocalMusicPlayerColors.current
     val palette = LocalLiquidGlassPalette.current
     val reducedMotion = rememberReducedMotionEnabled()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
     val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
     val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
+    val castState by viewModel.castUiState.collectAsStateWithLifecycle()
+    val sleepCalmLockEnabled by viewModel.sleepCalmLockEnabled.collectAsStateWithLifecycle()
+    val trackTechnicalInfo by viewModel.trackTechnicalInfo.collectAsStateWithLifecycle()
+    val isSavingTags by viewModel.isSavingTrackTags.collectAsStateWithLifecycle()
     val rawTrack = playback.currentTrack ?: return
     val track = remember(rawTrack, allTracks) {
         allTracks.firstOrNull { it.id == rawTrack.id } ?: rawTrack
@@ -131,8 +153,38 @@ fun NowPlayingSheet(
 
     var showLyricsView by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
-    var showSleepTimerDialog by remember { mutableStateOf(false) }
+    var showMoreSheet by remember { mutableStateOf(false) }
+    var showSleepTimerSheet by remember { mutableStateOf(false) }
+    var showTrackInfoSheet by remember { mutableStateOf(false) }
+    var showSleepModeSheet by remember { mutableStateOf(false) }
+    var showEditTagsSheet by remember { mutableStateOf(false) }
+    var showCastPickerSheet by remember { mutableStateOf(false) }
     var showLyricsSearchDialog by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = true) {
+        when {
+            sleepCalmLockEnabled -> viewModel.postStatusMessage("Nhấn giữ nút Mở khóa 1.5 giây để tắt Chế độ ngủ dịu mắt")
+            showCastPickerSheet -> showCastPickerSheet = false
+            showEditTagsSheet -> showEditTagsSheet = false
+            showSleepModeSheet -> showSleepModeSheet = false
+            showTrackInfoSheet -> showTrackInfoSheet = false
+            showSleepTimerSheet -> showSleepTimerSheet = false
+            showMoreSheet -> showMoreSheet = false
+            showQueueSheet -> showQueueSheet = false
+            else -> onDismiss()
+        }
+    }
+
+    DisposableEffect(showCastPickerSheet) {
+        if (showCastPickerSheet) {
+            viewModel.startCastDiscovery()
+        }
+        onDispose {
+            if (showCastPickerSheet) {
+                viewModel.stopCastDiscovery()
+            }
+        }
+    }
 
     val artworkScale by animateFloatAsState(
         targetValue = if (reducedMotion || playback.isPlaying) 1.0f else 0.90f,
@@ -199,25 +251,36 @@ fun NowPlayingSheet(
                     }
                     Text(text = spec, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.60f))
                 }
-                val timerActive = playback.sleepTimerMode != SleepTimerMode.OFF
+                val timerOrSleepActive = playback.sleepTimerMode != SleepTimerMode.OFF || sleepCalmLockEnabled
                 IconButton(
-                    onClick = { showSleepTimerDialog = true },
-                    modifier = Modifier.size(48.dp).testTag("sleep_timer_btn")
+                    onClick = { showMoreSheet = true },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("now_playing_more_btn")
                 ) {
                     Icon(
-                        Icons.Filled.Timer,
-                        contentDescription = "Hẹn giờ tắt",
-                        tint = if (timerActive) colors.accent else Color.White
+                        imageVector = Icons.Filled.MoreHoriz,
+                        contentDescription = "Tùy chọn khác",
+                        tint = if (timerOrSleepActive) colors.accent else Color.White
                     )
                 }
             }
-            if (playback.sleepTimerMode != SleepTimerMode.OFF) {
-                val timerBadgeText = when (playback.sleepTimerMode) {
-                    SleepTimerMode.AFTER_MINUTES -> "Hẹn tắt còn ${formatDurationMs(playback.sleepTimerRemainingMs)}"
-                    SleepTimerMode.END_OF_CURRENT_TRACK -> "Tắt sau bài hát hiện tại"
-                    SleepTimerMode.AFTER_N_TRACKS -> "Tắt sau ${playback.sleepTimerRemainingTracks} bài nữa"
-                    SleepTimerMode.OFF -> ""
-                }
+            if (playback.sleepTimerMode != SleepTimerMode.OFF || castState.connectedDeviceName != null) {
+                val badgeText = buildList {
+                    when (playback.sleepTimerMode) {
+                        SleepTimerMode.AFTER_MINUTES -> add(
+                            if (playback.sleepFadeOutActive) {
+                                "Giảm dần âm lượng • còn ${formatDurationMs(playback.sleepTimerRemainingMs)}"
+                            } else {
+                                "Hẹn tắt còn ${formatDurationMs(playback.sleepTimerRemainingMs)}"
+                            }
+                        )
+                        SleepTimerMode.END_OF_CURRENT_TRACK -> add("Tắt sau bài hát hiện tại")
+                        SleepTimerMode.AFTER_N_TRACKS -> add("Tắt sau ${playback.sleepTimerRemainingTracks} bài nữa")
+                        SleepTimerMode.OFF -> Unit
+                    }
+                    castState.connectedDeviceName?.let { add("Cast: $it") }
+                }.joinToString(" • ")
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
                     horizontalArrangement = Arrangement.Center
@@ -225,10 +288,17 @@ fun NowPlayingSheet(
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = colors.accent.copy(alpha = 0.24f),
-                        modifier = Modifier.clickable { showSleepTimerDialog = true }
+                        modifier = Modifier.clickable {
+                            if (playback.sleepTimerMode != SleepTimerMode.OFF) {
+                                showSleepTimerSheet = true
+                            } else {
+                                viewModel.refreshCastAndAudioOutputs()
+                                showCastPickerSheet = true
+                            }
+                        }
                     ) {
                         Text(
-                            text = timerBadgeText,
+                            text = badgeText,
                             style = MaterialTheme.typography.labelMedium,
                             color = Color.White,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -569,14 +639,45 @@ fun NowPlayingSheet(
                     ) {
                         Icon(Icons.Filled.GraphicEq, contentDescription = "Equalizer", tint = Color.White.copy(alpha = 0.80f))
                     }
-                    IconButton(onClick = { viewModel.toggleRomanization() }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Filled.Cast, contentDescription = "Chromecast / Thiết bị", tint = Color.White.copy(alpha = 0.80f))
+                    IconButton(
+                        onClick = {
+                            viewModel.refreshCastAndAudioOutputs()
+                            showCastPickerSheet = true
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("now_playing_cast_btn")
+                    ) {
+                        Icon(
+                            imageVector = if (castState.connectedDeviceName != null) {
+                                Icons.Filled.CastConnected
+                            } else {
+                                Icons.Filled.Cast
+                            },
+                            contentDescription = "Chromecast / Thiết bị",
+                            tint = if (castState.connectedDeviceName != null) {
+                                colors.accent
+                            } else {
+                                Color.White.copy(alpha = 0.80f)
+                            }
+                        )
                     }
                     IconButton(onClick = { showQueueSheet = true }, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.Filled.QueueMusic, contentDescription = "Hàng đợi", tint = Color.White.copy(alpha = 0.80f))
                     }
                 }
             }
+        }
+
+        // Sleep Mode Dim & Hold-to-Unlock Accidental-Touch Shield
+        if (sleepCalmLockEnabled) {
+            SleepCalmLockOverlay(
+                trackTitle = track.title,
+                trackArtist = track.artist,
+                playback = playback,
+                accentColor = colors.accent,
+                onUnlock = { viewModel.setSleepCalmLockEnabled(false) }
+            )
         }
     }
 
@@ -614,112 +715,98 @@ fun NowPlayingSheet(
         }
     }
 
-    if (showSleepTimerDialog) {
-        var customMinutesText by remember { mutableStateOf("") }
-        var nextTracksCount by remember { mutableStateOf("3") }
-        AlertDialog(
-            onDismissRequest = { showSleepTimerDialog = false },
-            title = { Text("Hẹn giờ tắt nhạc nâng cao") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Tắt theo thời gian (N phút)",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = colors.accent
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(15, 30, 45, 60).forEach { min ->
-                            TextButton(
-                                onClick = {
-                                    viewModel.setSleepTimerMinutes(min)
-                                    showSleepTimerDialog = false
-                                }
-                            ) {
-                                Text("${min}p")
-                            }
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = customMinutesText,
-                            onValueChange = { customMinutesText = it.filter(Char::isDigit) },
-                            label = { Text("Tùy chỉnh (phút)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.weight(1f).testTag("sleep_custom_minutes_input")
-                        )
-                        Button(
-                            onClick = {
-                                val min = customMinutesText.toIntOrNull()?.coerceAtLeast(1) ?: 10
-                                viewModel.setSleepTimerMinutes(min)
-                                showSleepTimerDialog = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.accent)
-                        ) { Text("Đặt") }
-                    }
+    if (showMoreSheet) {
+        NowPlayingMoreSheet(
+            track = track,
+            playback = playback,
+            sleepCalmLockEnabled = sleepCalmLockEnabled,
+            onDismiss = { showMoreSheet = false },
+            onOpenSleepTimer = {
+                showMoreSheet = false
+                showSleepTimerSheet = true
+            },
+            onOpenTrackInfo = {
+                showMoreSheet = false
+                viewModel.inspectTrackTechnicalInfo(track)
+                showTrackInfoSheet = true
+            },
+            onOpenSleepMode = {
+                showMoreSheet = false
+                showSleepModeSheet = true
+            },
+            onOpenEditTags = {
+                showMoreSheet = false
+                showEditTagsSheet = true
+            }
+        )
+    }
 
-                    Text(
-                        "Tắt theo bài hát",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = colors.accent,
-                        modifier = Modifier.padding(top = 6.dp)
-                    )
-                    TextButton(
-                        onClick = {
-                            viewModel.setSleepTimerEndOfTrack()
-                            showSleepTimerDialog = false
-                        },
-                        modifier = Modifier.fillMaxWidth().testTag("sleep_end_of_track_btn")
-                    ) {
-                        Text("Tắt sau bài hát hiện tại")
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = nextTracksCount,
-                            onValueChange = { nextTracksCount = it.filter(Char::isDigit) },
-                            label = { Text("Số bài tiếp theo (N)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.weight(1f).testTag("sleep_n_tracks_input")
-                        )
-                        Button(
-                            onClick = {
-                                val count = nextTracksCount.toIntOrNull()?.coerceAtLeast(1) ?: 3
-                                viewModel.setSleepTimerAfterTracks(count)
-                                showSleepTimerDialog = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-                            modifier = Modifier.testTag("sleep_n_tracks_apply")
-                        ) { Text("Áp dụng") }
-                    }
+    if (showSleepTimerSheet) {
+        SleepTimerAppleSheet(
+            playback = playback,
+            onDismiss = { showSleepTimerSheet = false },
+            onSelectMinutes = { min -> viewModel.setSleepTimerMinutes(min) },
+            onSelectEndOfTrack = { viewModel.setSleepTimerEndOfTrack() },
+            onSelectAfterTracks = { count -> viewModel.setSleepTimerAfterTracks(count) },
+            onCancelTimer = { viewModel.cancelSleepTimer() }
+        )
+    }
 
-                    if (playback.sleepTimerMode != SleepTimerMode.OFF) {
-                        TextButton(
-                            onClick = {
-                                viewModel.cancelSleepTimer()
-                                showSleepTimerDialog = false
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Hủy hẹn giờ đang chạy", color = colors.accent)
-                        }
+    if (showTrackInfoSheet) {
+        TrackInfoSheet(
+            track = track,
+            info = trackTechnicalInfo,
+            onDismiss = { showTrackInfoSheet = false },
+            onEditTagsClick = {
+                showTrackInfoSheet = false
+                showEditTagsSheet = true
+            }
+        )
+    }
+
+    if (showSleepModeSheet) {
+        SleepModeSheet(
+            playback = playback,
+            sleepCalmLockEnabled = sleepCalmLockEnabled,
+            onDismiss = { showSleepModeSheet = false },
+            onToggleFadeOut = { enabled -> viewModel.setSleepFadeOutEnabled(enabled) },
+            onToggleCalmLock = { enabled -> viewModel.setSleepCalmLockEnabled(enabled) },
+            onStart30MinSleepMode = {
+                viewModel.setSleepFadeOutEnabled(true)
+                viewModel.setSleepTimerMinutes(30)
+            },
+            onStartEndOfTrackSleepMode = {
+                viewModel.setSleepFadeOutEnabled(true)
+                viewModel.setSleepTimerEndOfTrack()
+            }
+        )
+    }
+
+    if (showEditTagsSheet) {
+        EditTagsSheet(
+            track = track,
+            isSaving = isSavingTags,
+            onDismiss = { showEditTagsSheet = false },
+            onDownloadOfflineFirst = { viewModel.downloadTrack(track) },
+            onSaveTags = { req ->
+                viewModel.saveOfflineTrackTags(track, req) { result ->
+                    if (result is AudioTagEditResult.Success) {
+                        showEditTagsSheet = false
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showSleepTimerDialog = false }) { Text("Đóng") }
             }
+        )
+    }
+
+    if (showCastPickerSheet) {
+        CastPickerSheet(
+            castState = castState,
+            onDismiss = { showCastPickerSheet = false },
+            onRefresh = { viewModel.refreshCastAndAudioOutputs() },
+            onSelectCastRoute = { routeId -> viewModel.selectCastRoute(routeId) },
+            onDisconnectCast = { viewModel.disconnectCast() },
+            onOpenSystemAudioOutput = { viewModel.openSystemAudioOutput(context) },
+            onOpenBluetoothSettings = { viewModel.openBluetoothSettings(context) }
         )
     }
 
@@ -748,6 +835,139 @@ fun NowPlayingSheet(
                 TextButton(onClick = { showLyricsSearchDialog = false }) { Text("Đóng") }
             }
         )
+    }
+}
+
+@Composable
+private fun SleepCalmLockOverlay(
+    trackTitle: String,
+    trackArtist: String,
+    playback: com.laughing.musicplayer.audio.PlaybackState,
+    accentColor: Color,
+    onUnlock: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var holdProgress by remember { mutableFloatStateOf(0f) }
+    var isHolding by remember { mutableStateOf(false) }
+
+    val timerText = when (playback.sleepTimerMode) {
+        SleepTimerMode.AFTER_MINUTES -> "Tắt nhạc sau ${formatDurationMs(playback.sleepTimerRemainingMs)}"
+        SleepTimerMode.END_OF_CURRENT_TRACK -> "Sẽ dừng sau bài hát hiện tại"
+        SleepTimerMode.AFTER_N_TRACKS -> "Sẽ dừng sau ${playback.sleepTimerRemainingTracks} bài nữa"
+        SleepTimerMode.OFF -> "Chế độ ngủ dịu mắt đang bật"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.84f))
+            .pointerInput(Unit) {
+                detectTapGestures { /* Absorb stray taps while Sleep Calm Lock is active */ }
+            }
+            .testTag("sleep_calm_lock_overlay"),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Bedtime,
+                contentDescription = "Chế độ ngủ",
+                tint = Color.White.copy(alpha = 0.65f),
+                modifier = Modifier.size(38.dp)
+            )
+            Text(
+                text = timerText,
+                style = MaterialTheme.typography.labelLarge,
+                color = accentColor.copy(alpha = 0.90f),
+                textAlign = TextAlign.Center
+            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = trackTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = trackArtist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.52f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = Color.White.copy(alpha = if (isHolding) 0.18f else 0.10f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                modifier = Modifier
+                    .heightIn(min = 56.dp)
+                    .clip(RoundedCornerShape(28.dp))
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onPress = {
+                                isHolding = true
+                                val holdJob = scope.launch {
+                                    val totalMs = 1500L
+                                    val stepMs = 40L
+                                    var elapsed = 0L
+                                    while (elapsed < totalMs) {
+                                        delay(stepMs)
+                                        elapsed += stepMs
+                                        holdProgress = (elapsed.toFloat() / totalMs).coerceIn(0f, 1f)
+                                    }
+                                    onUnlock()
+                                }
+                                val released = tryAwaitRelease()
+                                holdJob.cancel()
+                                isHolding = false
+                                if (released || holdProgress < 1f) {
+                                    holdProgress = 0f
+                                }
+                            }
+                        )
+                    }
+                    .testTag("sleep_calm_unlock_btn")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(26.dp)) {
+                        CircularProgressIndicator(
+                            progress = { if (isHolding) holdProgress else 0f },
+                            modifier = Modifier.size(26.dp),
+                            strokeWidth = 2.5.dp,
+                            color = accentColor,
+                            trackColor = Color.White.copy(alpha = 0.22f)
+                        )
+                        Icon(
+                            imageVector = Icons.Filled.LockOpen,
+                            contentDescription = "Mở khóa",
+                            tint = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    Text(
+                        text = if (isHolding) "Đang mở khóa..." else "Nhấn giữ 1.5s để mở khóa",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White.copy(alpha = 0.88f)
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -18,8 +18,8 @@ import com.laughing.musicplayer.data.local.toEntity
 import com.laughing.musicplayer.data.storage.UnifiedStorageManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.drinkless.tdlib.TdApi
 import java.io.File
 
@@ -30,9 +30,14 @@ class TelegramMessageScanner(
     private val telegramDao: TelegramDao,
     private val settingsDataStore: SettingsDataStore,
     private val storageManager: UnifiedStorageManager,
-    private val logger: ActivityLogger
+    private val logger: ActivityLogger,
+    private val rateLimiter: TelegramRateLimiter? = null
 ) {
-    private val concurrencySemaphore = Semaphore(3)
+    private val scanMutex = Mutex()
+
+    private suspend fun <T> throttled(block: suspend () -> T): T {
+        return rateLimiter?.withThrottledMetadataCall(block) ?: block()
+    }
 
     private data class ExtractedMessageResult(
         val track: Track,
@@ -40,11 +45,17 @@ class TelegramMessageScanner(
     )
 
     suspend fun scanSelectedSources(fullRescan: Boolean = false): Int {
+        if (rateLimiter?.isCircuitBreakerOpen() == true) {
+            val sec = ((rateLimiter.getRemainingFloodWaitMs()) / 1000L).coerceAtLeast(1L)
+            logger.log("ANTI_FLOOD", "WARN", "Mạch bảo vệ FLOOD_WAIT đang mở (còn ${sec}s), bỏ qua quét Telegram.")
+            return 0
+        }
         val selected = telegramDao.getSelectedSources()
         if (selected.isEmpty()) return 0
         var totalTracks = 0
         for (source in selected) {
-            totalTracks += concurrencySemaphore.withPermit {
+            if (rateLimiter?.isCircuitBreakerOpen() == true) break
+            totalTracks += scanMutex.withLock {
                 scanChat(source.chatId, fullRescan = fullRescan)
             }
         }
@@ -52,17 +63,30 @@ class TelegramMessageScanner(
     }
 
     suspend fun scanChat(chatId: Long, fullRescan: Boolean = false): Int {
-        val chat = core.sendQuery(TdApi.GetChat(chatId)).getOrElse { err ->
+        if (rateLimiter?.isCircuitBreakerOpen() == true) return 0
+        val chat = try {
+            throttled { core.sendQuery(TdApi.GetChat(chatId)) }
+        } catch (_: TelegramRateLimiter.FloodWaitActiveException) {
+            return 0
+        }.getOrElse { err ->
+            if (err is TelegramCore.TdLibException) {
+                rateLimiter?.reportTdErrorIfRateLimited(err.code, err.message)
+            }
             logger.log("TG_SYNC", "ERROR", "Không thể đọc thông tin chat $chatId: ${err.message}")
             return 0
         }
         val includeVoice = settingsDataStore.preferencesFlow.first().includeVoiceMessages
         val isForum = forumTopics.isForumSupergroup(chat)
 
-        return if (isForum) {
-            scanForumGroup(chat, includeVoice, fullRescan)
-        } else {
-            scanStandardChat(chat, includeVoice, fullRescan)
+        return try {
+            if (isForum) {
+                scanForumGroup(chat, includeVoice, fullRescan)
+            } else {
+                scanStandardChat(chat, includeVoice, fullRescan)
+            }
+        } catch (_: TelegramRateLimiter.FloodWaitActiveException) {
+            logger.log("ANTI_FLOOD", "WARN", "Đã ngắt quét '${chat.title}' do kích hoạt bảo vệ FLOOD_WAIT.")
+            trackDao.countDistinctTelegramTracksForChat(chat.id)
         }
     }
 
@@ -84,10 +108,12 @@ class TelegramMessageScanner(
         val updatedTopics = mutableListOf<ForumTopicEntity>()
 
         for (topic in topics) {
+            if (rateLimiter?.isCircuitBreakerOpen() == true) break
             val topicResults = mutableListOf<ExtractedMessageResult>()
             var fromMsgId = 0L
             var pages = 0
             while (pages < 40) {
+                if (rateLimiter?.isCircuitBreakerOpen() == true) break
                 val messages = forumTopics.fetchMessagesForTopic(
                     chatId = chat.id,
                     forumTopicId = topic.topicId.toInt(),
@@ -118,7 +144,6 @@ class TelegramMessageScanner(
                 if (oldestId == fromMsgId) break
                 fromMsgId = oldestId
                 pages++
-                delay(120L)
             }
 
             if (topicResults.isNotEmpty()) {
@@ -234,24 +259,29 @@ class TelegramMessageScanner(
         var totalAdded = 0
         var page = 0
 
-        var floodRetries = 0
         while (page < 60) {
-            val result = core.sendQuery(
-                TdApi.GetChatHistory(chat.id, fromMessageId, 0, 50, false)
-            )
+            if (rateLimiter?.isCircuitBreakerOpen() == true) break
+            val result = throttled {
+                core.sendQuery(
+                    TdApi.GetChatHistory(chat.id, fromMessageId, 0, 50, false)
+                )
+            }
             if (result.isFailure) {
                 val err = result.exceptionOrNull()
-                if (err is TelegramCore.TdLibException && (err.code == 429 || err.message.contains("FLOOD_WAIT", ignoreCase = true)) && floodRetries < 2) {
-                    floodRetries++
-                    val waitSec = Regex("(\\d+)").find(err.message)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 3L
-                    logger.log("TG_SYNC", "WARN", "Giới hạn tốc độ Telegram cho ${chat.title}, đợi ${waitSec}s...")
-                    delay((waitSec * 1000L).coerceIn(1000L, 15_000L))
-                    continue
+                if (err is TelegramCore.TdLibException) {
+                    val trippedSec = rateLimiter?.reportTdErrorIfRateLimited(err.code, err.message)
+                    if (trippedSec != null) {
+                        logger.log(
+                            "ANTI_FLOOD",
+                            "WARN",
+                            "FLOOD_WAIT cho '${chat.title}': kích hoạt mạch bảo vệ ${trippedSec}s và ngắt quét an toàn."
+                        )
+                        break
+                    }
                 }
                 logger.log("TG_SYNC", "ERROR", "Lỗi đồng bộ ${chat.title}: ${err?.message}")
                 break
             }
-            floodRetries = 0
             val response = result.getOrNull() ?: break
 
             val messages = response.messages
@@ -688,12 +718,16 @@ class TelegramMessageScanner(
     }
 
     private suspend fun repairIncompleteTracksForChat(chatId: Long) {
+        if (rateLimiter?.isCircuitBreakerOpen() == true) return
         val incomplete = runCatching { trackDao.getIncompletePersonalTracksForChat(chatId) }.getOrNull().orEmpty()
         if (incomplete.isEmpty()) return
         var repaired = 0
-        for (entity in incomplete.take(25)) {
+        for (entity in incomplete.take(15)) {
+            if (rateLimiter?.isCircuitBreakerOpen() == true) break
             val msgId = entity.telegramMessageId ?: continue
-            val msg = core.sendQuery(TdApi.GetMessage(chatId, msgId), timeoutMs = 5_000L).getOrNull() ?: continue
+            val msg = throttled {
+                core.sendQuery(TdApi.GetMessage(chatId, msgId), timeoutMs = 5_000L).getOrNull()
+            } ?: continue
             val audioFile = TelegramFileResolver.extractFilesFromMessage(msg)?.first ?: continue
             val remoteId = audioFile.remote?.id?.takeIf { it.isNotBlank() }
             val uniqueId = audioFile.remote?.uniqueId?.takeIf { it.isNotBlank() }
@@ -716,7 +750,6 @@ class TelegramMessageScanner(
                 verifiedAtMs = System.currentTimeMillis()
             )
             repaired++
-            delay(80L)
         }
         if (repaired > 0) {
             logger.log("TG_SYNC", "INFO", "Đã sửa $repaired bản ghi thiếu siêu dữ liệu TDLib trong chat $chatId")

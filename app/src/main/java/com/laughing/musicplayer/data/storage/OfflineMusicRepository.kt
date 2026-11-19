@@ -259,7 +259,11 @@ class OfflineMusicRepository(
                         runCatching { GenreType.valueOf(prev.genre) }
                             .getOrDefault(track.genre)
                     } else track.genre,
-                    genreManuallyEdited = prev.genreManuallyEdited
+                    genreManuallyEdited = prev.genreManuallyEdited,
+                    albumArtist = track.albumArtist ?: prev.albumArtist,
+                    releaseYear = track.releaseYear ?: prev.releaseYear,
+                    channelCount = track.channelCount.takeIf { it > 0 } ?: prev.channelCount,
+                    audioCodec = track.audioCodec ?: prev.audioCodec
                 )
             } else track
             val blob = VietnameseTextNormalizer.normalize("${merged.title} ${merged.artist} ${merged.album} ${merged.fileName}")
@@ -318,7 +322,11 @@ class OfflineMusicRepository(
             downloadProgress = 1f,
             dateAddedEpochMs = file.lastModified(),
             loudnessGainDb = analysis.replayGainDb ?: 0f,
-            bpm = analysis.bpm
+            bpm = analysis.bpm,
+            albumArtist = probed.albumArtist,
+            releaseYear = probed.releaseYear,
+            channelCount = probed.channelCount,
+            audioCodec = probed.audioCodec
         )
     }
 }
