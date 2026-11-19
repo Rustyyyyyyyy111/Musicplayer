@@ -11,8 +11,12 @@ import com.laughing.musicplayer.data.storage.CacheManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.drinkless.tdlib.TdApi
 import java.io.File
 import java.io.IOException
@@ -23,20 +27,24 @@ class TelegramAudioDataSource(
     private val core: TelegramCore,
     private val fileResolver: TelegramFileResolver,
     private val cacheManager: CacheManager,
-    private val logger: ActivityLogger
+    private val logger: ActivityLogger,
+    externalScope: CoroutineScope? = null
 ) : BaseDataSource(/* isNetwork = */ true) {
 
     class Factory(
         private val core: TelegramCore,
         private val fileResolver: TelegramFileResolver,
         private val cacheManager: CacheManager,
-        private val logger: ActivityLogger
+        private val logger: ActivityLogger,
+        private val externalScope: CoroutineScope? = null
     ) : DataSource.Factory {
         override fun createDataSource(): DataSource =
-            TelegramAudioDataSource(core, fileResolver, cacheManager, logger)
+            TelegramAudioDataSource(core, fileResolver, cacheManager, logger, externalScope)
     }
 
-    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val ownScope: CoroutineScope? =
+        if (externalScope == null) CoroutineScope(SupervisorJob() + Dispatchers.IO) else null
+    private val backgroundScope: CoroutineScope = externalScope ?: ownScope!!
 
     private var currentUri: Uri? = null
     private var fileId: Int = 0
@@ -113,7 +121,7 @@ class TelegramAudioDataSource(
         }
 
         val trackKey = resolvedTrackId ?: "tg_$fileId"
-        backgroundScope.launch {
+        backgroundScope.launch(Dispatchers.IO) {
             if (completedTdFile != null || readyFile.local?.isDownloadingCompleted == true) {
                 localFile?.let { file ->
                     cacheManager.recordCacheAccess(
@@ -228,24 +236,30 @@ class TelegramAudioDataSource(
             if (activeFileId != 0 && completedSnapshot == null) {
                 core.cancelDownloadAsync(activeFileId, onlyIfPending = false)
             }
-            backgroundScope.launch {
-                val latestFile = if (completedSnapshot == null && activeFileId != 0) {
-                    core.sendQuery(TdApi.GetFile(activeFileId), timeoutMs = 4_000L).getOrNull()
-                } else {
-                    completedSnapshot
-                }
-                if (f != null && f.exists()) {
-                    cacheManager.recordCacheAccess(
-                        key = "tg_stream_$activeTrackKey",
-                        trackId = activeTrackKey,
-                        file = f,
-                        isPermanentOffline = false
-                    )
-                }
-                if (trackIdCopy != null && latestFile?.local?.isDownloadingCompleted == true) {
-                    fileResolver.promoteCompletedTdFileById(trackIdCopy, latestFile)
+            backgroundScope.launch(Dispatchers.IO) {
+                try {
+                    val latestFile = if (completedSnapshot == null && activeFileId != 0) {
+                        core.sendQuery(TdApi.GetFile(activeFileId), timeoutMs = 4_000L).getOrNull()
+                    } else {
+                        completedSnapshot
+                    }
+                    if (f != null && f.exists()) {
+                        cacheManager.recordCacheAccess(
+                            key = "tg_stream_$activeTrackKey",
+                            trackId = activeTrackKey,
+                            file = f,
+                            isPermanentOffline = false
+                        )
+                    }
+                    if (trackIdCopy != null && latestFile?.local?.isDownloadingCompleted == true) {
+                        fileResolver.promoteCompletedTdFileById(trackIdCopy, latestFile)
+                    }
+                } finally {
+                    ownScope?.cancel()
                 }
             }
+        } else {
+            ownScope?.cancel()
         }
     }
 
@@ -328,6 +342,20 @@ class TelegramAudioDataSource(
         }
     }
 
+    private fun awaitNextTdFileUpdate(targetFileId: Int, fallback: TdApi.File? = null): TdApi.File? {
+        if (closed || Thread.currentThread().isInterrupted) return null
+        val pushed = runBlocking {
+            withTimeoutOrNull(UPDATE_WAIT_TIMEOUT_MS) {
+                core.fileUpdates.filter { it.id == targetFileId }.first()
+            }
+        }
+        if (pushed != null) return pushed
+        if (closed || Thread.currentThread().isInterrupted) return null
+        return runBlocking {
+            core.sendQuery(TdApi.GetFile(targetFileId), timeoutMs = 4_000L).getOrNull()
+        } ?: fallback
+    }
+
     private fun waitForLocalFileReady(
         targetFileId: Int,
         targetOffset: Long,
@@ -382,17 +410,10 @@ class TelegramAudioDataSource(
                 }
             }
 
-            try {
-                Thread.sleep(80L)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
+            if (Thread.currentThread().isInterrupted || closed) {
                 throw IOException("Đã hủy tải luồng Telegram")
             }
-            if (closed) throw IOException("Đã hủy tải luồng Telegram")
-
-            current = runBlocking {
-                core.sendQuery(TdApi.GetFile(targetFileId), timeoutMs = 4_000L).getOrNull()
-            } ?: current
+            current = awaitNextTdFileUpdate(targetFileId, current) ?: current
         }
         throw IOException("Hết thời gian tải luồng Telegram (quá 7.5 giây)")
     }
@@ -417,7 +438,7 @@ class TelegramAudioDataSource(
         while (!closed && !Thread.currentThread().isInterrupted &&
             System.currentTimeMillis() - lastProgressAtMs < STALL_TIMEOUT_MS
         ) {
-            val f = runBlocking { core.sendQuery(TdApi.GetFile(fileId), timeoutMs = 4_000L).getOrNull() }
+            val f = awaitNextTdFileUpdate(fileId)
                 ?: throw IOException("Mất kết nối luồng Telegram")
 
             reopenRandomAccessFileIfPathChanged(f)
@@ -460,13 +481,6 @@ class TelegramAudioDataSource(
                     core.sendQuery(TdApi.DownloadFile(fileId, 32, readPosition, 0L, false), timeoutMs = 4_000L)
                 }
             }
-
-            try {
-                Thread.sleep(80L)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw IOException("Đã hủy đệm dữ liệu Telegram")
-            }
         }
         if (computeVerifiedAvailableBytes(readPosition) <= 0L) {
             throw IOException("Hết thời gian đệm dữ liệu Telegram (quá 7.5 giây)")
@@ -477,6 +491,7 @@ class TelegramAudioDataSource(
         private const val SEEK_REISSUE_THRESHOLD_MS = 1_200L
         private const val RETRY_STALL_THRESHOLD_MS = 3_500L
         private const val STALL_TIMEOUT_MS = 7_500L
+        private const val UPDATE_WAIT_TIMEOUT_MS = 450L
 
         internal fun computeAvailableBytesAtPosition(
             readPosition: Long,

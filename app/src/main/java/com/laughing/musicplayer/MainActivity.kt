@@ -57,6 +57,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -137,6 +138,10 @@ class MainActivity : ComponentActivity() {
         val initialTrackId = intent?.getStringExtra("widget_play_track_id")
         setContent {
             val vm: MusicPlayerViewModel = viewModel()
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                vm.onFirstFrameRendered()
+            }
             LaunchedEffect(initialTrackId) {
                 if (!initialTrackId.isNullOrBlank()) {
                     vm.playTrackByIdFromWidget(initialTrackId)
@@ -158,7 +163,7 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
     val liquidPalette by viewModel.liquidGlassPalette.collectAsStateWithLifecycle()
-    val toastMsg by viewModel.statusToast.collectAsStateWithLifecycle()
+    val liquidArtwork by viewModel.liquidGlassArtwork.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
@@ -179,8 +184,8 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
         }
     }
 
-    LaunchedEffect(toastMsg) {
-        toastMsg?.let { msg ->
+    LaunchedEffect(viewModel) {
+        viewModel.toastEvents.collect { msg ->
             snackbarHostState.showSnackbar(msg)
             viewModel.clearToast()
         }
@@ -218,7 +223,10 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
         val reducedMotion = rememberReducedMotionEnabled()
 
         @OptIn(ExperimentalSharedTransitionApi::class)
-        AppleMusicSurfaceBackground(artworkUri = playback.currentTrack?.artworkUri) {
+        AppleMusicSurfaceBackground(
+            artworkUri = playback.currentTrack?.artworkUri,
+            blurredArtwork = liquidArtwork
+        ) {
             SharedTransitionLayout {
                 val sharedTransitionScope = this
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -282,10 +290,6 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                             .navigationBarsPadding(),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        val progress = if (playback.durationMs > 0L) {
-                                            playback.positionMs.toFloat() / playback.durationMs.toFloat()
-                                        } else 0f
-
                                         AnimatedVisibility(
                                             visible = playback.currentTrack != null && !showNowPlaying,
                                             enter = if (reducedMotion) {
@@ -313,14 +317,13 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                                     )
                                                 }
                                             } else Modifier
-                                            FloatingMiniPlayer(
+                                            MiniPlayerProgressHost(
+                                                viewModel = viewModel,
                                                 track = currentTrack,
                                                 isPlaying = playback.isPlaying,
                                                 isBuffering = playback.isBuffering,
-                                                progress = progress,
+                                                fallbackDurationMs = playback.durationMs,
                                                 onTap = { showNowPlaying = true },
-                                                onTogglePlayPause = { viewModel.togglePlayPause() },
-                                                onSkipNext = { viewModel.skipNext() },
                                                 artworkModifier = miniArtMod,
                                                 modifier = Modifier
                                                     .widthIn(max = 680.dp)
@@ -621,4 +624,35 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
             }
         }
     }
+}
+
+@Composable
+private fun MiniPlayerProgressHost(
+    viewModel: MusicPlayerViewModel,
+    track: com.laughing.musicplayer.core.model.Track?,
+    isPlaying: Boolean,
+    isBuffering: Boolean,
+    fallbackDurationMs: Long,
+    onTap: () -> Unit,
+    artworkModifier: Modifier,
+    modifier: Modifier = Modifier
+) {
+    val progressState by viewModel.playbackProgress.collectAsStateWithLifecycle()
+    val durationMs = progressState.durationMs.takeIf { it > 0L } ?: fallbackDurationMs
+    val progress = if (durationMs > 0L) {
+        (progressState.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    FloatingMiniPlayer(
+        track = track,
+        isPlaying = isPlaying,
+        isBuffering = isBuffering,
+        progress = progress,
+        onTap = onTap,
+        onTogglePlayPause = { viewModel.togglePlayPause() },
+        onSkipNext = { viewModel.skipNext() },
+        artworkModifier = artworkModifier,
+        modifier = modifier
+    )
 }

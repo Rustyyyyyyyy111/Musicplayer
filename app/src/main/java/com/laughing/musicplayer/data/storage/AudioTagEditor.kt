@@ -378,6 +378,8 @@ class AudioTagEditor(
     }
 
     companion object {
+        private const val MAX_INLINE_TAG_EDIT_BYTES = 80L * 1024L * 1024L
+
         fun writeTagsToFile(
             file: File,
             format: AudioFormat,
@@ -388,6 +390,14 @@ class AudioTagEditor(
             genre: String,
             year: Int?
         ): Boolean {
+            if (!file.exists() || !file.isFile) return false
+            val maxSafeBytes = minOf(
+                MAX_INLINE_TAG_EDIT_BYTES,
+                (Runtime.getRuntime().maxMemory() / 4L).coerceAtLeast(16L * 1024L * 1024L)
+            )
+            if (file.length() > maxSafeBytes) {
+                return false
+            }
             val detected = AudioFormatDetector.detectFromFile(file) ?: format
             return when (detected) {
                 AudioFormat.MP3 -> writeId3v2Mp3(file, title, artist, album, albumArtist, genre, year)

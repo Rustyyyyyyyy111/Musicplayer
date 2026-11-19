@@ -26,25 +26,34 @@ class NetworkProxyManager(
     private var cachedConfig: ProxyConfig = ProxyConfig()
 
     @Volatile
-    private var cachedClient: OkHttpClient = buildClient(ProxyConfig())
+    private var cachedClient: OkHttpClient? = null
 
     @Volatile
-    private var cachedStreamClient: OkHttpClient = buildStreamClient(ProxyConfig())
+    private var cachedStreamClient: OkHttpClient? = null
 
-    fun getHttpClient(): OkHttpClient = cachedClient
+    fun getHttpClient(): OkHttpClient = cachedClient ?: synchronized(this) {
+        cachedClient ?: buildClient(cachedConfig).also { cachedClient = it }
+    }
 
-    fun getStreamHttpClient(): OkHttpClient = cachedStreamClient
+    fun getStreamHttpClient(): OkHttpClient = cachedStreamClient ?: synchronized(this) {
+        cachedStreamClient ?: buildStreamClient(cachedConfig).also { cachedStreamClient = it }
+    }
+
+    suspend fun warmUp() = withContext(Dispatchers.IO) {
+        getHttpClient()
+        getStreamHttpClient()
+    }
 
     fun getYouTubeCookieHeader(url: String): String? = youTubeCookieManager.getCookieHeaderForUrl(url)
 
     suspend fun refreshHttpClient(): OkHttpClient {
         val config = settingsDataStore.preferencesFlow.first().proxyConfig
-        if (config != cachedConfig) {
+        if (config != cachedConfig || cachedClient == null) {
             cachedConfig = config
             cachedClient = buildClient(config)
             cachedStreamClient = buildStreamClient(config)
         }
-        return cachedClient
+        return getHttpClient()
     }
 
     fun rebuildClients() {

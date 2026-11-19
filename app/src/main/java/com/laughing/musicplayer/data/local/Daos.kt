@@ -29,8 +29,14 @@ interface TrackDao {
     @Query("SELECT * FROM tracks WHERE id = :id LIMIT 1")
     suspend fun getTrackById(id: String): TrackEntity?
 
+    @Query("SELECT * FROM tracks WHERE id IN (:ids)")
+    suspend fun getTracksByIds(ids: List<String>): List<TrackEntity>
+
     @Query("SELECT * FROM tracks")
     suspend fun getAllTracksOnce(): List<TrackEntity>
+
+    @Query("SELECT * FROM tracks WHERE telegramChatId = :chatId AND source = 'TELEGRAM'")
+    suspend fun getTelegramTracksForChat(chatId: Long): List<TrackEntity>
 
     @Query("SELECT * FROM tracks WHERE telegramChatId = :chatId AND telegramMessageId = :messageId LIMIT 1")
     suspend fun findByTelegramMessage(chatId: Long, messageId: Long): TrackEntity?

@@ -5,6 +5,7 @@ import com.laughing.musicplayer.data.local.ActivityLogDao
 import com.laughing.musicplayer.data.local.ActivityLogEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -12,9 +13,13 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ActivityLogger(private val dao: ActivityLogDao) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val logDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val scope = CoroutineScope(SupervisorJob() + logDispatcher)
+    private val insertCount = AtomicInteger(0)
 
     private val sensitivePatterns = listOf(
         Regex("(?i)(api_hash|password|otp|code|token|secret|session)\\s*[:=]\\s*\\S+"),
@@ -37,7 +42,9 @@ class ActivityLogger(private val dao: ActivityLogDao) {
                         message = sanitized
                     )
                 )
-                dao.trimToRingBufferLimit()
+                if (insertCount.incrementAndGet() % 20 == 0) {
+                    dao.trimToRingBufferLimit()
+                }
             }
         }
     }

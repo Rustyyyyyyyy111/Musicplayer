@@ -66,6 +66,7 @@ class TelegramAuthentication(
     private val onPersonalLogoutCleanup: (suspend () -> Unit)? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val _uiState = MutableStateFlow<TelegramAuthUiState>(TelegramAuthUiState.Initializing)
     val uiState: StateFlow<TelegramAuthUiState> = _uiState.asStateFlow()
@@ -76,7 +77,8 @@ class TelegramAuthentication(
     @Volatile
     private var lastSubmittedPhone: String = ""
 
-    init {
+    fun ensureStarted() {
+        if (!started.compareAndSet(false, true)) return
         scope.launch {
             val savedSlot = settingsDataStore.preferencesFlow.first().activeTelegramAccountId
             _activeAccountSlot.value = savedSlot
@@ -146,6 +148,7 @@ class TelegramAuthentication(
     }
 
     fun submitApiCredentials(apiIdRaw: String, apiHashRaw: String): String? {
+        ensureStarted()
         val parsedId = apiIdRaw.trim().toIntOrNull()
         val cleanHash = apiHashRaw.trim()
         if (parsedId == null || parsedId <= 0) {
@@ -162,6 +165,7 @@ class TelegramAuthentication(
     }
 
     suspend fun submitPhoneNumber(phone: String) {
+        ensureStarted()
         val normalized = normalizePhone(phone)
         if (normalized.length < 8) {
             _uiState.value = TelegramAuthUiState.WaitPhoneNumber(
@@ -191,6 +195,7 @@ class TelegramAuthentication(
     }
 
     suspend fun submitOtpCode(code: String) {
+        ensureStarted()
         val clean = code.filter { it.isDigit() }
         val prev = _uiState.value as? TelegramAuthUiState.WaitOtpCode
         if (clean.isEmpty()) {
@@ -210,6 +215,7 @@ class TelegramAuthentication(
     }
 
     suspend fun resendOtpCode() {
+        ensureStarted()
         val prev = _uiState.value as? TelegramAuthUiState.WaitOtpCode ?: return
         core.sendQuery(TdApi.ResendAuthenticationCode(null))
             .onSuccess {
@@ -222,10 +228,12 @@ class TelegramAuthentication(
     }
 
     suspend fun changePhoneNumber() {
+        ensureStarted()
         _uiState.value = TelegramAuthUiState.WaitPhoneNumber(lastPhone = lastSubmittedPhone)
     }
 
     suspend fun submitTwoFactorPassword(password: String) {
+        ensureStarted()
         val prev = _uiState.value as? TelegramAuthUiState.WaitTwoFactorPassword
         if (password.isEmpty()) {
             if (prev != null) {
@@ -244,6 +252,7 @@ class TelegramAuthentication(
     }
 
     suspend fun logout() {
+        ensureStarted()
         _uiState.value = TelegramAuthUiState.Authenticating
         core.sendQuery(TdApi.LogOut())
             .onSuccess {
@@ -258,6 +267,7 @@ class TelegramAuthentication(
     }
 
     suspend fun switchAccount(slot: Int) {
+        ensureStarted()
         _activeAccountSlot.value = slot
         settingsDataStore.setActiveTelegramAccount(slot)
         if (!core.hasValidApiCredentials()) {

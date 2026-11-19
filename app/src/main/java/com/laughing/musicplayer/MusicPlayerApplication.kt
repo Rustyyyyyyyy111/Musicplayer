@@ -155,7 +155,8 @@ class AppContainer(context: Context) {
         settingsDataStore,
         playlistAndSmartMixManager,
         networkProxyManager,
-        activityLogger
+        activityLogger,
+        ioScope = appScope
     )
 
     val audioTagEditor = AudioTagEditor(
@@ -173,6 +174,7 @@ class AppContainer(context: Context) {
     @Volatile
     private var mediaControllerFuture: ListenableFuture<MediaController>? = null
     private val hasTriggeredSessionAutoSync = AtomicBoolean(false)
+    private val postFrameInitDone = AtomicBoolean(false)
 
     init {
         playerController.onEnsureMediaSessionConnected = { connectMediaSessionService() }
@@ -199,7 +201,18 @@ class AppContainer(context: Context) {
                     )
                 }
         }
-        observeTelegramStartupAutoSync()
+    }
+
+    fun onFirstFrameRendered() {
+        if (!postFrameInitDone.compareAndSet(false, true)) return
+        playerController.restoreLastPlaybackCheckpointIfNeeded()
+        appScope.launch(Dispatchers.IO) {
+            youTubeCookieManager.warmUp()
+            networkProxyManager.warmUp()
+            telegramAuthentication.ensureStarted()
+            observeTelegramStartupAutoSync()
+        }
+        castPlaybackCoordinator.ensureInitialized()
     }
 
     private fun observeTelegramStartupAutoSync() {

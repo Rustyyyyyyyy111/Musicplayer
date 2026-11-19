@@ -63,6 +63,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,6 +80,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.laughing.musicplayer.core.model.ArtistGroup
 import com.laughing.musicplayer.core.model.GenreType
@@ -122,10 +126,24 @@ fun LibraryScreen(
     val notPlayed30Days by viewModel.notPlayed30DaysTracks.collectAsStateWithLifecycle()
     val mostPlayedMonth by viewModel.mostPlayedThisMonthTracks.collectAsStateWithLifecycle()
     val highEnergy130Bpm by viewModel.highEnergyTracks.collectAsStateWithLifecycle()
-    val topics by viewModel.telegramTopics.collectAsStateWithLifecycle()
+    val artists by viewModel.libraryArtists.collectAsStateWithLifecycle()
+    val albums by viewModel.libraryAlbums.collectAsStateWithLifecycle()
+    val genreCounts by viewModel.libraryGenreCounts.collectAsStateWithLifecycle()
+    val hasAllFilesAccess by viewModel.hasAllFilesAccess.collectAsStateWithLifecycle()
     val duplicates by viewModel.duplicateGroups.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
     val isIndexingOffline by viewModel.isIndexingOffline.collectAsStateWithLifecycle()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshStoragePermissions()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Preserve per-source category tab and scroll state
     var tgCategory by rememberSaveable { mutableStateOf(LibraryTabOption.ALL_SONGS) }
@@ -222,12 +240,24 @@ fun LibraryScreen(
         }
     }
 
-    val artists = remember(sourceTracks, topics, selectedSource) {
-        val relevantTopics = if (selectedSource == MusicSource.TELEGRAM) topics else emptyList()
-        viewModel.buildArtistGroups(sourceTracks, relevantTopics)
+    val artistDrillTracks = remember(sourceTracks, selectedArtistGroup) {
+        val target = selectedArtistGroup ?: return@remember emptyList()
+        if (target.isTelegramTopic && target.chatId != null && target.threadId != null) {
+            sourceTracks.filter { it.telegramChatId == target.chatId && it.telegramThreadId == target.threadId }
+        } else {
+            sourceTracks.filter { it.artist == target.name }
+        }
     }
 
-    val albums = remember(sourceTracks) { viewModel.buildAlbumGroups(sourceTracks) }
+    val albumDrillTracks = remember(sourceTracks, selectedAlbumName) {
+        val album = selectedAlbumName ?: return@remember emptyList()
+        sourceTracks.filter { it.album == album }
+    }
+
+    val genreDrillTracks = remember(allTracks, selectedGenre) {
+        val genre = selectedGenre ?: return@remember emptyList()
+        allTracks.filter { it.genre == genre }
+    }
 
     Column(
         modifier = Modifier
@@ -489,17 +519,11 @@ fun LibraryScreen(
                     }
                 }
             } else if (selectedArtistGroup != null) {
-                val target = selectedArtistGroup!!
-                val filtered = if (target.isTelegramTopic && target.chatId != null && target.threadId != null) {
-                    sourceTracks.filter { it.telegramChatId == target.chatId && it.telegramThreadId == target.threadId }
-                } else {
-                    sourceTracks.filter { it.artist == target.name }
-                }
-                items(filtered, key = { it.id }) { track ->
+                items(artistDrillTracks, key = { it.id }) { track ->
                     TrackRowItem(
                         track = track,
                         isCurrent = playback.currentTrack?.id == track.id,
-                        onPlay = { viewModel.playTrack(track, filtered) },
+                        onPlay = { viewModel.playTrack(track, artistDrillTracks) },
                         onToggleFavorite = { viewModel.toggleFavorite(track) },
                         onDownload = { viewModel.downloadTrack(track) },
                         onAddToQueue = { viewModel.addToQueueNext(track) },
@@ -508,12 +532,11 @@ fun LibraryScreen(
                     )
                 }
             } else if (selectedAlbumName != null) {
-                val filtered = sourceTracks.filter { it.album == selectedAlbumName }
-                items(filtered, key = { it.id }) { track ->
+                items(albumDrillTracks, key = { it.id }) { track ->
                     TrackRowItem(
                         track = track,
                         isCurrent = playback.currentTrack?.id == track.id,
-                        onPlay = { viewModel.playTrack(track, filtered) },
+                        onPlay = { viewModel.playTrack(track, albumDrillTracks) },
                         onToggleFavorite = { viewModel.toggleFavorite(track) },
                         onDownload = { viewModel.downloadTrack(track) },
                         onAddToQueue = { viewModel.addToQueueNext(track) },
@@ -522,12 +545,11 @@ fun LibraryScreen(
                     )
                 }
             } else if (selectedGenre != null) {
-                val filtered = allTracks.filter { it.genre == selectedGenre }
-                items(filtered, key = { it.id }) { track ->
+                items(genreDrillTracks, key = { it.id }) { track ->
                     TrackRowItem(
                         track = track,
                         isCurrent = playback.currentTrack?.id == track.id,
-                        onPlay = { viewModel.playTrack(track, filtered) },
+                        onPlay = { viewModel.playTrack(track, genreDrillTracks) },
                         onToggleFavorite = { viewModel.toggleFavorite(track) },
                         onDownload = { viewModel.downloadTrack(track) },
                         onAddToQueue = { viewModel.addToQueueNext(track) },
@@ -576,7 +598,7 @@ fun LibraryScreen(
                             item {
                                 EmptySourceCard(
                                     source = selectedSource,
-                                    hasAllFilesAccess = viewModel.hasAllFilesAccessPermission(),
+                                    hasAllFilesAccess = hasAllFilesAccess,
                                     onOpenSearch = onOpenSearch,
                                     onGrantAllFilesAccess = {
                                         runCatching { context.startActivity(viewModel.buildAllFilesAccessIntent()) }
@@ -678,7 +700,7 @@ fun LibraryScreen(
 
                     LibraryTabOption.GENRES -> {
                         items(GenreType.entries) { genre ->
-                            val count = allTracks.count { it.genre == genre }
+                            val count = genreCounts[genre] ?: 0
                             AppleCard(
                                 cornerRadius = 18.dp,
                                 onClick = { selectedGenre = genre },

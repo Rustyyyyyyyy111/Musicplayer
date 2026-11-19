@@ -83,11 +83,12 @@ fun NowPlayingMoreSheet(
     onOpenSleepTimer: () -> Unit,
     onOpenTrackInfo: () -> Unit,
     onOpenSleepMode: () -> Unit,
-    onOpenEditTags: () -> Unit
+    onOpenEditTags: () -> Unit,
+    remainingTimerMs: Long = playback.sleepTimerRemainingMs
 ) {
     val colors = LocalMusicPlayerColors.current
     val timerSubtitle = when (playback.sleepTimerMode) {
-        SleepTimerMode.AFTER_MINUTES -> "Đang bật • còn ${formatDurationMs(playback.sleepTimerRemainingMs)}"
+        SleepTimerMode.AFTER_MINUTES -> "Đang bật • còn ${formatDurationMs(remainingTimerMs)}"
         SleepTimerMode.END_OF_CURRENT_TRACK -> "Đang bật • tắt sau bài hiện tại"
         SleepTimerMode.AFTER_N_TRACKS -> "Đang bật • tắt sau ${playback.sleepTimerRemainingTracks} bài nữa"
         SleepTimerMode.OFF -> "Chọn thời gian hoặc tắt sau bài hiện tại"
@@ -263,7 +264,8 @@ fun SleepTimerAppleSheet(
     onSelectMinutes: (Int) -> Unit,
     onSelectEndOfTrack: () -> Unit,
     onSelectAfterTracks: (Int) -> Unit,
-    onCancelTimer: () -> Unit
+    onCancelTimer: () -> Unit,
+    remainingTimerMs: Long = playback.sleepTimerRemainingMs
 ) {
     val colors = LocalMusicPlayerColors.current
     var customMinutes by remember { mutableIntStateOf(25) }
@@ -309,7 +311,7 @@ fun SleepTimerAppleSheet(
 
             if (playback.sleepTimerMode != SleepTimerMode.OFF) {
                 val activeText = when (playback.sleepTimerMode) {
-                    SleepTimerMode.AFTER_MINUTES -> "Còn lại ${formatDurationMs(playback.sleepTimerRemainingMs)}"
+                    SleepTimerMode.AFTER_MINUTES -> "Còn lại ${formatDurationMs(remainingTimerMs)}"
                     SleepTimerMode.END_OF_CURRENT_TRACK -> "Sẽ dừng sau khi kết thúc bài hát hiện tại"
                     SleepTimerMode.AFTER_N_TRACKS -> "Còn ${playback.sleepTimerRemainingTracks} bài nữa sẽ tắt"
                     SleepTimerMode.OFF -> ""

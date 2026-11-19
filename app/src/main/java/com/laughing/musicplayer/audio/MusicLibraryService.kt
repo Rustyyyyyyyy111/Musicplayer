@@ -24,15 +24,17 @@ import java.io.File
 import android.os.Bundle
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import java.util.concurrent.ConcurrentHashMap
 
 @UnstableApi
 class MusicLibraryService : MediaLibraryService() {
@@ -161,48 +163,54 @@ class MusicLibraryService : MediaLibraryService() {
 
     private fun observePlaybackForSyncedLyrics(app: MusicPlayerApplication) {
         serviceScope.launch {
-            app.container.playerController.playbackState.collect { state ->
-                val track = state.currentTrack
-                if (track == null) {
-                    if (currentLyricLine != null) {
-                        currentLyricLine = null
+            val controller = app.container.playerController
+            combine(
+                controller.playbackState
+                    .map { it.currentTrack }
+                    .distinctUntilChanged { a, b -> a?.id == b?.id },
+                controller.playbackProgress
+            ) { track, progress -> track to progress.positionMs }
+                .collect { (track, positionMs) ->
+                    if (track == null) {
+                        if (currentLyricLine != null) {
+                            currentLyricLine = null
+                            triggerNotificationUpdate()
+                        }
+                        return@collect
+                    }
+
+                    if (cachedLyricsTrackId != track.id) {
+                        cachedLyricsTrackId = track.id
+                        cachedLyricsLines = emptyList()
+                        if (currentLyricLine != null) {
+                            currentLyricLine = null
+                            triggerNotificationUpdate()
+                        }
+                        lyricsLoadJob?.cancel()
+                        lyricsLoadJob = launch(Dispatchers.IO) {
+                            val res = app.container.lyricsEngine.loadLyricsForTrack(track)
+                            cachedLyricsLines = res?.lines.orEmpty()
+                        }
+                    }
+
+                    if (!showLyricsOnLockScreen || cachedLyricsLines.isEmpty()) {
+                        if (currentLyricLine != null) {
+                            currentLyricLine = null
+                            triggerNotificationUpdate()
+                        }
+                        return@collect
+                    }
+
+                    val activeText = cachedLyricsLines
+                        .lastOrNull { it.timestampMs <= positionMs }
+                        ?.text
+                        ?.takeIf { it.isNotBlank() }
+
+                    if (activeText != currentLyricLine) {
+                        currentLyricLine = activeText
                         triggerNotificationUpdate()
                     }
-                    return@collect
                 }
-
-                if (cachedLyricsTrackId != track.id) {
-                    cachedLyricsTrackId = track.id
-                    cachedLyricsLines = emptyList()
-                    if (currentLyricLine != null) {
-                        currentLyricLine = null
-                        triggerNotificationUpdate()
-                    }
-                    lyricsLoadJob?.cancel()
-                    lyricsLoadJob = launch(Dispatchers.IO) {
-                        val res = app.container.lyricsEngine.loadLyricsForTrack(track)
-                        cachedLyricsLines = res?.lines.orEmpty()
-                    }
-                }
-
-                if (!showLyricsOnLockScreen || cachedLyricsLines.isEmpty()) {
-                    if (currentLyricLine != null) {
-                        currentLyricLine = null
-                        triggerNotificationUpdate()
-                    }
-                    return@collect
-                }
-
-                val activeText = cachedLyricsLines
-                    .lastOrNull { it.timestampMs <= state.positionMs }
-                    ?.text
-                    ?.takeIf { it.isNotBlank() }
-
-                if (activeText != currentLyricLine) {
-                    currentLyricLine = activeText
-                    triggerNotificationUpdate()
-                }
-            }
         }
     }
 
@@ -269,7 +277,7 @@ class MusicLibraryService : MediaLibraryService() {
         private val controller: DualPlayerCrossfadeController
     ) : ForwardingPlayer(player) {
 
-        private val listenerWrappers = mutableMapOf<Player.Listener, Player.Listener>()
+        private val listenerWrappers = ConcurrentHashMap<Player.Listener, Player.Listener>()
 
         override fun getAvailableCommands(): Player.Commands {
             return augmentAvailableCommands(super.getAvailableCommands())
@@ -396,11 +404,8 @@ class MusicLibraryService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-            val app = application as MusicPlayerApplication
-            val allTracks = runBlocking { app.container.database.trackDao().getAllTracksOnce().map { it.toDomain() } }
-
-            val items: List<MediaItem> = when (parentId) {
-                ROOT_ID -> listOf(
+            if (parentId == ROOT_ID) {
+                val rootChildren = listOf(
                     browsableItem(NODE_LIBRARY, "Thư viện nhạc", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
                     browsableItem(NODE_ARTISTS, "Nghệ sĩ", MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS),
                     browsableItem(NODE_ALBUMS, "Album", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
@@ -408,30 +413,46 @@ class MusicLibraryService : MediaLibraryService() {
                     browsableItem(NODE_FAVORITES, "Yêu thích", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
                     browsableItem(NODE_QUEUE, "Hàng đợi", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
                 )
-                NODE_LIBRARY -> allTracks.map { it.toBrowseMediaItem() }
-                NODE_FAVORITES -> allTracks.filter { it.isFavorite }.map { it.toBrowseMediaItem() }
-                NODE_QUEUE -> app.container.playerController.playbackState.value.queue.map { it.toBrowseMediaItem() }
-                NODE_ARTISTS -> allTracks.groupBy { it.telegramTopicName ?: it.artist }.keys.map { artist ->
-                    browsableItem("artist:$artist", artist, MediaMetadata.MEDIA_TYPE_ARTIST)
-                }
-                NODE_ALBUMS -> allTracks.groupBy { it.album }.keys.map { album ->
-                    browsableItem("album:$album", album, MediaMetadata.MEDIA_TYPE_ALBUM)
-                }
-                NODE_PLAYLISTS -> emptyList()
-                else -> when {
-                    parentId.startsWith("artist:") -> {
-                        val target = parentId.removePrefix("artist:")
-                        allTracks.filter { (it.telegramTopicName ?: it.artist) == target }
-                            .map { it.toBrowseMediaItem() }
+                return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.copyOf(rootChildren), params))
+            }
+            val app = application as MusicPlayerApplication
+            val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val items: List<MediaItem> = if (parentId == NODE_QUEUE) {
+                        app.container.playerController.playbackState.value.queue.map { it.toBrowseMediaItem() }
+                    } else {
+                        val allTracks = app.container.database.trackDao().getAllTracksOnce().map { it.toDomain() }
+                        when (parentId) {
+                            NODE_LIBRARY -> allTracks.map { it.toBrowseMediaItem() }
+                            NODE_FAVORITES -> allTracks.filter { it.isFavorite }.map { it.toBrowseMediaItem() }
+                            NODE_ARTISTS -> allTracks.groupBy { it.telegramTopicName ?: it.artist }.keys.map { artist ->
+                                browsableItem("artist:$artist", artist, MediaMetadata.MEDIA_TYPE_ARTIST)
+                            }
+                            NODE_ALBUMS -> allTracks.groupBy { it.album }.keys.map { album ->
+                                browsableItem("album:$album", album, MediaMetadata.MEDIA_TYPE_ALBUM)
+                            }
+                            NODE_PLAYLISTS -> emptyList()
+                            else -> when {
+                                parentId.startsWith("artist:") -> {
+                                    val target = parentId.removePrefix("artist:")
+                                    allTracks.filter { (it.telegramTopicName ?: it.artist) == target }
+                                        .map { it.toBrowseMediaItem() }
+                                }
+                                parentId.startsWith("album:") -> {
+                                    val target = parentId.removePrefix("album:")
+                                    allTracks.filter { it.album == target }.map { it.toBrowseMediaItem() }
+                                }
+                                else -> emptyList()
+                            }
+                        }
                     }
-                    parentId.startsWith("album:") -> {
-                        val target = parentId.removePrefix("album:")
-                        allTracks.filter { it.album == target }.map { it.toBrowseMediaItem() }
-                    }
-                    else -> emptyList()
+                    future.set(LibraryResult.ofItemList(ImmutableList.copyOf(items), params))
+                } catch (t: Throwable) {
+                    future.setException(t)
                 }
             }
-            return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.copyOf(items), params))
+            return future
         }
 
         override fun onGetSearchResult(
@@ -443,11 +464,19 @@ class MusicLibraryService : MediaLibraryService() {
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
             val app = application as MusicPlayerApplication
-            val allTracks = runBlocking { app.container.database.trackDao().getAllTracksOnce().map { it.toDomain() } }
-            val matched = allTracks.filter {
-                VietnameseTextNormalizer.matches("${it.title} ${it.artist} ${it.album}", query)
-            }.map { it.toBrowseMediaItem() }
-            return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.copyOf(matched), params))
+            val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val allTracks = app.container.database.trackDao().getAllTracksOnce().map { it.toDomain() }
+                    val matched = allTracks.filter {
+                        VietnameseTextNormalizer.matches("${it.title} ${it.artist} ${it.album}", query)
+                    }.map { it.toBrowseMediaItem() }
+                    future.set(LibraryResult.ofItemList(ImmutableList.copyOf(matched), params))
+                } catch (t: Throwable) {
+                    future.setException(t)
+                }
+            }
+            return future
         }
 
         override fun onAddMediaItems(
@@ -457,14 +486,27 @@ class MusicLibraryService : MediaLibraryService() {
         ): ListenableFuture<MutableList<MediaItem>> {
             val app = application as MusicPlayerApplication
             val trackDao = app.container.database.trackDao()
-            val resolved = runBlocking {
-                mediaItems.mapNotNull { item ->
-                    val track = trackDao.getTrackById(item.mediaId)?.toDomain() ?: return@mapNotNull item
-                    val uri = track.localPath ?: track.streamUri ?: return@mapNotNull item
-                    item.buildUpon().setUri(uri).build()
-                }.toMutableList()
+            val itemsSnapshot = mediaItems.toList()
+            val future = SettableFuture.create<MutableList<MediaItem>>()
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val ids = itemsSnapshot.map { it.mediaId }.distinct()
+                    val byId = if (ids.isEmpty()) {
+                        emptyMap()
+                    } else {
+                        trackDao.getTracksByIds(ids).associate { it.id to it.toDomain() }
+                    }
+                    val resolved = itemsSnapshot.map { item ->
+                        val track = byId[item.mediaId] ?: return@map item
+                        val uri = track.localPath ?: track.streamUri ?: return@map item
+                        item.buildUpon().setUri(uri).build()
+                    }.toMutableList()
+                    future.set(resolved)
+                } catch (t: Throwable) {
+                    future.setException(t)
+                }
             }
-            return Futures.immediateFuture(resolved)
+            return future
         }
     }
 

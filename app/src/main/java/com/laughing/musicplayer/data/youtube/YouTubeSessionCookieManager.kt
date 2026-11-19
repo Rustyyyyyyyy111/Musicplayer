@@ -17,16 +17,27 @@ class YouTubeSessionCookieManager(
     private val logger: ActivityLogger
 ) {
     @Volatile
-    private var cachedCookieHeader: String = credentialStore.getSecret(KEY_COOKIE_HEADER)
+    private var cachedCookieHeader: String? = null
+
+    private fun ensureLoaded(): String {
+        cachedCookieHeader?.let { return it }
+        return synchronized(this) {
+            cachedCookieHeader ?: credentialStore.getSecret(KEY_COOKIE_HEADER).also {
+                cachedCookieHeader = it
+            }
+        }
+    }
+
+    suspend fun warmUp() = withContext(Dispatchers.IO) {
+        ensureLoaded()
+    }
 
     fun getCookiesTxtFile(): File = File(context.filesDir, COOKIES_FILE_NAME)
 
-    fun hasActiveCookies(): Boolean = isAuthenticatedCookieHeader(cachedCookieHeader)
+    fun hasActiveCookies(): Boolean = isAuthenticatedCookieHeader(ensureLoaded())
 
     fun getCookieHeaderForUrl(url: String): String? {
-        val header = cachedCookieHeader.ifBlank {
-            credentialStore.getSecret(KEY_COOKIE_HEADER).also { cachedCookieHeader = it }
-        }
+        val header = ensureLoaded()
         if (header.isBlank()) return null
         val host = runCatching { java.net.URI(url).host?.lowercase(Locale.US) }.getOrNull().orEmpty()
         val isYouTubeOrGoogle = host.endsWith("youtube.com") ||

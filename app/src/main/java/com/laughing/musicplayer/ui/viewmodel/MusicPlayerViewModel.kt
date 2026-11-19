@@ -9,9 +9,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
 import android.content.Context
+import androidx.compose.ui.graphics.ImageBitmap
 import com.laughing.musicplayer.BuildConfig
 import com.laughing.musicplayer.MusicPlayerApplication
 import com.laughing.musicplayer.audio.CastUiState
+import com.laughing.musicplayer.audio.PlaybackProgress
 import com.laughing.musicplayer.audio.PlaybackState
 import com.laughing.musicplayer.core.model.ActivityLogItem
 import com.laughing.musicplayer.core.model.AlbumGroup
@@ -44,16 +46,20 @@ import com.laughing.musicplayer.data.youtube.YouTubeCollectionResult
 import com.laughing.musicplayer.data.youtube.YouTubeExploreMood
 import com.laughing.musicplayer.data.youtube.YouTubeSearchTab
 import com.laughing.musicplayer.lyrics.LyricsResult
+import com.laughing.musicplayer.ui.theme.ArtworkEffectsCache
 import com.laughing.musicplayer.ui.theme.LiquidGlassPalette
-import com.laughing.musicplayer.ui.theme.PaletteExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -61,11 +67,13 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 data class YouTubeUiState(
     val query: String = "",
@@ -131,9 +139,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     val isYouTubeLoggedIn: StateFlow<Boolean> = preferences
         .map { it.isYouTubeLoggedIn }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), container.youTubeCookieManager.hasActiveCookies())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val playbackState: StateFlow<PlaybackState> = container.playerController.playbackState
+    val playbackProgress: StateFlow<PlaybackProgress> = container.playerController.playbackProgress
 
     val allTracks: StateFlow<List<Track>> = trackDao.observeAllTracks()
         .map { list -> list.map { it.toDomain() } }
@@ -187,13 +196,45 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     val duplicateGroups: StateFlow<List<DuplicateGroup>> = allTracks
         .map { tracks -> DuplicateDetector.findDuplicates(tracks) }
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _selectedLibrarySource = MutableStateFlow(MusicSource.TELEGRAM)
     val selectedLibrarySource: StateFlow<MusicSource> = _selectedLibrarySource.asStateFlow()
 
+    val libraryArtists: StateFlow<List<ArtistGroup>> = combine(
+        allTracks,
+        telegramTopics,
+        _selectedLibrarySource
+    ) { tracks, topics, src ->
+        val filtered = tracks.filter { it.source == src }
+        buildArtistGroups(filtered, if (src == MusicSource.TELEGRAM) topics else emptyList())
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val libraryAlbums: StateFlow<List<AlbumGroup>> = combine(
+        allTracks,
+        _selectedLibrarySource
+    ) { tracks, src ->
+        buildAlbumGroups(tracks.filter { it.source == src })
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val libraryGenreCounts: StateFlow<Map<GenreType, Int>> = allTracks
+        .map { tracks -> tracks.groupingBy { it.genre }.eachCount() }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    private val _hasAllFilesAccess = MutableStateFlow(false)
+    val hasAllFilesAccess: StateFlow<Boolean> = _hasAllFilesAccess.asStateFlow()
+
     private val _liquidGlassPalette = MutableStateFlow(LiquidGlassPalette())
     val liquidGlassPalette: StateFlow<LiquidGlassPalette> = _liquidGlassPalette.asStateFlow()
+
+    private val _liquidGlassArtwork = MutableStateFlow<ImageBitmap?>(null)
+    val liquidGlassArtwork: StateFlow<ImageBitmap?> = _liquidGlassArtwork.asStateFlow()
 
     private val _isScanningTelegram = MutableStateFlow(false)
     val isScanningTelegram: StateFlow<Boolean> = _isScanningTelegram.asStateFlow()
@@ -207,32 +248,45 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _searchQuery = MutableStateFlow("")
     private val _searchTab = MutableStateFlow(UnifiedSearchTab.ALL)
     private val _searchYouTubeSubTab = MutableStateFlow(YouTubeSearchTab.VIDEOS)
-    private val _manualSearchPulse = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val _manualSearchPulse = MutableSharedFlow<Int>(extraBufferCapacity = 8)
+    private val manualPulseCounter = AtomicInteger(0)
 
-    @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+    private var exploreJob: Job? = null
+    private var moodJob: Job? = null
+    private var playlistJob: Job? = null
+    private var lyricsLoadJob: Job? = null
+    private var lyricsSearchJob: Job? = null
+    private var techInfoJob: Job? = null
+
+    @OptIn(FlowPreview::class)
+    private val youtubeSearchTrigger: Flow<Pair<String, Int>> = merge(
+        _searchQuery.map { it.trim() }.debounce(350L).map { it to manualPulseCounter.get() },
+        _manualSearchPulse.map { pulse -> _searchQuery.value.trim() to pulse }
+    )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val _youtubeAsyncResults: StateFlow<YouTubeUiState> = combine(
-        _searchQuery.map { it.trim() },
+        youtubeSearchTrigger,
         _searchTab,
-        _searchYouTubeSubTab,
-        _manualSearchPulse.onStart { emit(Unit) }
-    ) { q, tab, subTab, _ ->
-        Triple(q, tab, subTab)
+        _searchYouTubeSubTab
+    ) { (query, pulseId), tab, subTab ->
+        SearchRequestKey(query = query, tab = tab, subTab = subTab, pulseId = pulseId)
     }
-        .debounce(320L)
-        .flatMapLatest { (query, tab, subTab) ->
-            val shouldQueryYouTube = query.length >= 2 &&
-                (tab == UnifiedSearchTab.ALL || tab == UnifiedSearchTab.YOUTUBE_MUSIC)
+        .distinctUntilChanged()
+        .flatMapLatest { req ->
+            val shouldQueryYouTube = req.query.length >= 2 &&
+                (req.tab == UnifiedSearchTab.ALL || req.tab == UnifiedSearchTab.YOUTUBE_MUSIC)
             if (!shouldQueryYouTube) {
-                flow { emit(YouTubeUiState(query = query, activeTab = subTab)) }
+                flow { emit(YouTubeUiState(query = req.query, activeTab = req.subTab)) }
             } else {
                 flow {
-                    emit(YouTubeUiState(query = query, activeTab = subTab, isSearching = true))
-                    val result = container.youTubeMusicRepository.search(query, subTab)
+                    emit(YouTubeUiState(query = req.query, activeTab = req.subTab, isSearching = true))
+                    val result = container.youTubeMusicRepository.search(req.query, req.subTab)
                     result.onSuccess { res ->
                         emit(
                             YouTubeUiState(
-                                query = query,
-                                activeTab = subTab,
+                                query = req.query,
+                                activeTab = req.subTab,
                                 isSearching = false,
                                 tracks = res.tracks,
                                 collections = res.collections
@@ -241,8 +295,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     }.onFailure { err ->
                         emit(
                             YouTubeUiState(
-                                query = query,
-                                activeTab = subTab,
+                                query = req.query,
+                                activeTab = req.subTab,
                                 isSearching = false,
                                 errorMessage = err.message ?: "Lỗi tìm kiếm YouTube Music"
                             )
@@ -253,6 +307,13 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
         .flowOn(Dispatchers.IO)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), YouTubeUiState())
+
+    private data class SearchRequestKey(
+        val query: String,
+        val tab: UnifiedSearchTab,
+        val subTab: YouTubeSearchTab,
+        val pulseId: Int
+    )
 
     val unifiedSearchState: StateFlow<UnifiedSearchUiState> = combine(
         _searchQuery,
@@ -314,6 +375,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _statusToast = MutableStateFlow<String?>(null)
     val statusToast: StateFlow<String?> = _statusToast.asStateFlow()
 
+    private val _toastChannel = Channel<String>(Channel.BUFFERED)
+    val toastEvents: Flow<String> = _toastChannel.receiveAsFlow()
+
     private val _proxyTestResult = MutableStateFlow<String?>(null)
     val proxyTestResult: StateFlow<String?> = _proxyTestResult.asStateFlow()
 
@@ -333,13 +397,25 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             playbackState
                 .map { it.currentTrack }
                 .distinctUntilChanged { a, b -> a?.id == b?.id && a?.artworkUri == b?.artworkUri }
-                .collect { track ->
+                .collectLatest { track ->
                     if (track != null) {
-                        val pal = PaletteExtractor.extractFromUri(getApplication(), track.artworkUri)
-                        _liquidGlassPalette.value = pal
+                        val visuals = ArtworkEffectsCache.getOrCompute(
+                            context = getApplication(),
+                            uriString = track.artworkUri,
+                            httpClient = container.networkProxyManager.getHttpClient()
+                        )
+                        _liquidGlassPalette.value = visuals.palette
+                        _liquidGlassArtwork.value = visuals.blurredBitmap
                         loadLyricsForTrack(track)
+                    } else {
+                        _liquidGlassArtwork.value = null
                     }
                 }
+        }
+        viewModelScope.launch {
+            _youtubeAsyncResults.collect { ytRes ->
+                _youtubeState.value = ytRes
+            }
         }
         viewModelScope.launch {
             preferences.map { it.autoSyncTelegram }.distinctUntilChanged().collect { enabled ->
@@ -358,15 +434,35 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 .distinctUntilChanged()
                 .collect { msg ->
                     if (!msg.isNullOrBlank()) {
-                        _statusToast.value = msg
+                        postToast(msg)
                         container.playerController.clearErrorMessage()
                     }
                 }
         }
     }
 
+    private fun postToast(message: String) {
+        _statusToast.value = message
+        _toastChannel.trySend(message)
+    }
+
     fun clearToast() {
         _statusToast.value = null
+    }
+
+    fun onFirstFrameRendered() {
+        container.onFirstFrameRendered()
+        refreshStoragePermissions()
+    }
+
+    fun refreshStoragePermissions() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _hasAllFilesAccess.value = container.storageManager.hasAllFilesAccessPermission()
+        }
+    }
+
+    fun ensureTelegramAuthStarted() {
+        container.telegramAuthentication.ensureStarted()
     }
 
     fun observeTopicTracks(chatId: Long, threadId: Long): kotlinx.coroutines.flow.Flow<List<Track>> {
@@ -376,7 +472,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun clearActivityLogs() {
         viewModelScope.launch {
             container.activityLogger.clear()
-            _statusToast.value = "Đã xóa nhật ký hoạt động"
+            postToast("Đã xóa nhật ký hoạt động")
         }
     }
 
@@ -506,7 +602,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun cycleRepeat() = container.playerController.cycleRepeatMode()
     fun addToQueueNext(track: Track) {
         container.playerController.addToQueueNext(track)
-        _statusToast.value = "Đã thêm '${track.title}' vào phát tiếp theo"
+        postToast("Đã thêm '${track.title}' vào phát tiếp theo")
     }
 
     fun playTrackByIdFromWidget(trackId: String) {
@@ -524,42 +620,46 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     fun setSleepTimerMinutes(minutes: Int) {
         container.playerController.setSleepTimerMinutes(minutes)
-        _statusToast.value = if (minutes > 0) "Đã hẹn giờ tắt sau $minutes phút" else "Đã tắt hẹn giờ"
+        postToast(if (minutes > 0) "Đã hẹn giờ tắt sau $minutes phút" else "Đã tắt hẹn giờ")
     }
 
     fun setSleepTimerEndOfTrack() {
         container.playerController.setSleepTimerEndOfTrack()
-        _statusToast.value = "Sẽ dừng phát sau bài hát hiện tại"
+        postToast("Sẽ dừng phát sau bài hát hiện tại")
     }
 
     fun setSleepTimerAfterTracks(count: Int) {
         container.playerController.setSleepTimerAfterTracks(count)
-        _statusToast.value = if (count > 0) "Sẽ dừng phát sau $count bài tiếp theo" else "Đã tắt hẹn giờ"
+        postToast(if (count > 0) "Sẽ dừng phát sau $count bài tiếp theo" else "Đã tắt hẹn giờ")
     }
 
     fun cancelSleepTimer() {
         container.playerController.cancelSleepTimer()
-        _statusToast.value = "Đã hủy hẹn giờ tắt nhạc"
+        postToast("Đã hủy hẹn giờ tắt nhạc")
     }
 
     fun setSleepFadeOutEnabled(enabled: Boolean) {
         viewModelScope.launch {
             container.settingsDataStore.setSleepFadeOutEnabled(enabled)
-            _statusToast.value = if (enabled) {
-                "Đã bật giảm dần âm lượng 30 giây khi hẹn tắt"
-            } else {
-                "Đã tắt giảm dần âm lượng khi hẹn giờ"
-            }
+            postToast(
+                if (enabled) {
+                    "Đã bật giảm dần âm lượng 30 giây khi hẹn tắt"
+                } else {
+                    "Đã tắt giảm dần âm lượng khi hẹn giờ"
+                }
+            )
         }
     }
 
     fun setSleepCalmLockEnabled(enabled: Boolean) {
         _sleepCalmLockEnabled.value = enabled
-        _statusToast.value = if (enabled) {
-            "Đã bật khóa thao tác nhầm — giao diện dịu mắt"
-        } else {
-            "Đã mở khóa màn hình Đang phát"
-        }
+        postToast(
+            if (enabled) {
+                "Đã bật khóa thao tác nhầm — giao diện dịu mắt"
+            } else {
+                "Đã mở khóa màn hình Đang phát"
+            }
+        )
     }
 
     fun startCastDiscovery() {
@@ -577,35 +677,38 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         if (castState.connectedDeviceName == null &&
             (!castState.isCastFrameworkAvailable || castState.castRoutes.isEmpty())
         ) {
-            _statusToast.value = castState.statusNotice
-                ?: "Không tìm thấy thiết bị Chromecast — hãy chọn Bluetooth hoặc đầu ra âm thanh."
+            postToast(
+                castState.statusNotice
+                    ?: "Không tìm thấy thiết bị Chromecast — hãy chọn Bluetooth hoặc đầu ra âm thanh."
+            )
         }
     }
 
     fun selectCastRoute(routeId: String) {
-        _statusToast.value = container.castPlaybackCoordinator.selectCastRoute(routeId)
+        postToast(container.castPlaybackCoordinator.selectCastRoute(routeId))
     }
 
     fun disconnectCast() {
-        _statusToast.value = container.castPlaybackCoordinator.disconnectCast()
+        postToast(container.castPlaybackCoordinator.disconnectCast())
     }
 
     fun openSystemAudioOutput(callerContext: Context) {
         val opened = container.castPlaybackCoordinator.openSystemAudioOutputSwitcher(callerContext)
         if (!opened) {
-            _statusToast.value = "Không thể mở bộ chọn đầu ra âm thanh trên thiết bị này"
+            postToast("Không thể mở bộ chọn đầu ra âm thanh trên thiết bị này")
         }
     }
 
     fun openBluetoothSettings(callerContext: Context) {
         val opened = container.castPlaybackCoordinator.openBluetoothSettings(callerContext)
         if (!opened) {
-            _statusToast.value = "Không thể mở cài đặt Bluetooth trên thiết bị này"
+            postToast("Không thể mở cài đặt Bluetooth trên thiết bị này")
         }
     }
 
     fun inspectTrackTechnicalInfo(track: Track) {
-        viewModelScope.launch {
+        techInfoJob?.cancel()
+        techInfoJob = viewModelScope.launch {
             _trackTechnicalInfo.value = TrackMetadataInspector.inspect(getApplication(), track)
         }
     }
@@ -623,13 +726,13 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 is AudioTagEditResult.Success -> {
                     container.playerController.refreshTrackMetadata(result.updatedTrack)
                     _trackTechnicalInfo.value = TrackMetadataInspector.inspect(getApplication(), result.updatedTrack)
-                    _statusToast.value = result.messageVi
+                    postToast(result.messageVi)
                 }
                 is AudioTagEditResult.NotOfflineTrack -> {
-                    _statusToast.value = result.messageVi
+                    postToast(result.messageVi)
                 }
                 is AudioTagEditResult.Error -> {
-                    _statusToast.value = result.messageVi
+                    postToast(result.messageVi)
                 }
             }
             onCompleted(result)
@@ -637,7 +740,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun postStatusMessage(message: String) {
-        _statusToast.value = message
+        postToast(message)
     }
 
     fun toggleFavorite(track: Track) {
@@ -649,7 +752,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun updateTrackGenre(track: Track, genre: GenreType) {
         viewModelScope.launch(Dispatchers.IO) {
             trackDao.updateGenre(track.id, genre.name)
-            _statusToast.value = "Đã đổi thể loại thành ${genre.displayNameVi}"
+            postToast("Đã đổi thể loại thành ${genre.displayNameVi}")
         }
     }
 
@@ -693,7 +796,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     trackDao.deleteTrackById(track.id)
                 }
             }
-            _statusToast.value = "Đã xóa bản lưu cục bộ (không ảnh hưởng Telegram)"
+            postToast("Đã xóa bản lưu cục bộ (không ảnh hưởng Telegram)")
         }
     }
 
@@ -707,7 +810,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     trackDao.deleteTrackById(duplicate.id)
                 }
             }
-            _statusToast.value = "Đã giữ bản chất lượng tốt nhất và dọn bản trùng lặp cục bộ"
+            postToast("Đã giữ bản chất lượng tốt nhất và dọn bản trùng lặp cục bộ")
         }
     }
 
@@ -722,7 +825,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _isIndexingOffline.value = true
             val count = container.offlineMusicRepository.indexLocalLibrary()
             _isIndexingOffline.value = false
-            _statusToast.value = "Đã quét $count bài hát Offline"
+            postToast("Đã quét $count bài hát Offline")
         }
     }
 
@@ -730,7 +833,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun submitTelegramApiCredentials(apiId: String, apiHash: String): String? {
         val err = container.telegramAuthentication.submitApiCredentials(apiId, apiHash)
         if (err == null) {
-            _statusToast.value = "Đã lưu thông số API Telegram"
+            postToast("Đã lưu thông số API Telegram")
         }
         return err
     }
@@ -746,7 +849,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun resendTelegramOtp() {
         viewModelScope.launch {
             container.telegramAuthentication.resendOtpCode()
-            _statusToast.value = "Đã gửi lại yêu cầu mã xác thực Telegram"
+            postToast("Đã gửi lại yêu cầu mã xác thực Telegram")
         }
     }
 
@@ -793,7 +896,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _isScanningTelegram.value = true
             val count = container.telegramMusicRepository.syncSelectedSources(fullRescan)
             _isScanningTelegram.value = false
-            _statusToast.value = "Đã đồng bộ $count bản nhạc từ Telegram"
+            postToast("Đã đồng bộ $count bản nhạc từ Telegram")
         }
     }
 
@@ -802,7 +905,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _isScanningTelegram.value = true
             val count = container.telegramMusicRepository.scanSingleChat(chatId)
             _isScanningTelegram.value = false
-            _statusToast.value = "Đã quét $count bài nhạc từ hội thoại"
+            postToast("Đã quét $count bài nhạc từ hội thoại")
         }
     }
 
@@ -819,23 +922,21 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun selectSearchYouTubeSubTab(tab: YouTubeSearchTab) {
         _searchYouTubeSubTab.value = tab
         _youtubeState.value = _youtubeState.value.copy(activeTab = tab)
+        if (_searchQuery.value.trim().length >= 2) {
+            _manualSearchPulse.tryEmit(manualPulseCounter.incrementAndGet())
+        }
     }
 
     fun submitUnifiedSearch() {
-        _manualSearchPulse.tryEmit(Unit)
-        if (_searchQuery.value.isNotBlank()) {
-            searchYouTubeMusic()
+        if (_searchQuery.value.trim().length >= 2) {
+            _manualSearchPulse.tryEmit(manualPulseCounter.incrementAndGet())
         }
     }
 
     fun updateYouTubeQuery(query: String) = updateSearchQuery(query)
 
     fun selectYouTubeTab(tab: YouTubeSearchTab) {
-        _youtubeState.value = _youtubeState.value.copy(activeTab = tab)
-        _searchYouTubeSubTab.value = tab
-        if (_youtubeState.value.query.isNotBlank()) {
-            searchYouTubeMusic()
-        }
+        selectSearchYouTubeSubTab(tab)
     }
 
     // YouTube WebView Cookie Auth
@@ -843,7 +944,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         val captured = container.youTubeCookieManager.captureCookiesFromWebView(cookieManager)
         if (captured) {
             container.networkProxyManager.rebuildClients()
-            _statusToast.value = "Đã đăng nhập YouTube Music & lưu cookies.txt"
+            postToast("Đã đăng nhập YouTube Music & lưu cookies.txt")
         }
         return captured
     }
@@ -852,34 +953,14 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             container.youTubeCookieManager.clearSession()
             container.networkProxyManager.rebuildClients()
-            _statusToast.value = "Đã đăng xuất YouTube Music"
+            postToast("Đã đăng xuất YouTube Music")
         }
     }
 
     fun getYouTubeCookiesPath(): String = container.youTubeCookieManager.getCookiesTxtFile().absolutePath
 
     fun searchYouTubeMusic() {
-        val state = _youtubeState.value
-        if (state.query.isBlank()) return
-        viewModelScope.launch {
-            _youtubeState.value = state.copy(isSearching = true, errorMessage = null)
-            container.youTubeMusicRepository.search(state.query, state.activeTab)
-                .onSuccess { res ->
-                    _youtubeState.value = _youtubeState.value.copy(
-                        isSearching = false,
-                        tracks = res.tracks,
-                        collections = res.collections
-                    )
-                }
-                .onFailure { err ->
-                    val message = err.message ?: "Lỗi tìm kiếm YouTube Music"
-                    _youtubeState.value = _youtubeState.value.copy(
-                        isSearching = false,
-                        errorMessage = message
-                    )
-                    _statusToast.value = message
-                }
-        }
+        submitUnifiedSearch()
     }
 
     fun loadYouTubeExploreIfNeeded(forceRefresh: Boolean = false) {
@@ -890,7 +971,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         ) {
             return
         }
-        viewModelScope.launch {
+        exploreJob?.cancel()
+        exploreJob = viewModelScope.launch {
             _exploreRawState.value = _exploreRawState.value.copy(
                 isLoading = true,
                 errorMessage = null
@@ -918,6 +1000,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun selectExploreMood(mood: YouTubeExploreMood?) {
+        moodJob?.cancel()
         if (mood == null || _exploreRawState.value.selectedMood == mood) {
             _exploreRawState.value = _exploreRawState.value.copy(
                 selectedMood = null,
@@ -928,7 +1011,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             )
             return
         }
-        viewModelScope.launch {
+        moodJob = viewModelScope.launch {
             _exploreRawState.value = _exploreRawState.value.copy(
                 selectedMood = mood,
                 isLoadingMood = true,
@@ -959,7 +1042,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun openYouTubePlaylist(collection: YouTubeCollectionResult) {
-        viewModelScope.launch {
+        playlistJob?.cancel()
+        playlistJob = viewModelScope.launch {
             _playlistRawState.value = YouTubePlaylistDetailUiState(
                 collection = collection,
                 isLoading = true,
@@ -985,11 +1069,13 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     fun downloadPlaylistTracks(tracks: List<Track>) {
         val count = container.youTubeDownloadManager.downloadPlaylist(tracks)
-        _statusToast.value = if (count > 0) {
-            "Đang tải $count bài hát vào ${container.storageManager.getYouTubeDisplayPath()}"
-        } else {
-            "Tất cả bài hát trong playlist đã được tải về"
-        }
+        postToast(
+            if (count > 0) {
+                "Đang tải $count bài hát vào ${container.storageManager.getYouTubeDisplayPath()}"
+            } else {
+                "Tất cả bài hát trong playlist đã được tải về"
+            }
+        )
     }
 
     private fun matchesSearchQuery(track: Track, query: String): Boolean {
@@ -1002,7 +1088,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         if (name.isBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
             container.playlistAndSmartMixManager.createPlaylist(name)
-            _statusToast.value = "Đã tạo playlist '$name'"
+            postToast("Đã tạo playlist '$name'")
         }
     }
 
@@ -1012,10 +1098,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             if (tracks.isNotEmpty()) {
                 withContext(Dispatchers.Main) {
                     container.playerController.playQueue(tracks, 0)
-                    _statusToast.value = "Đang phát $name (${tracks.size} bài)"
+                    postToast("Đang phát $name (${tracks.size} bài)")
                 }
             } else {
-                _statusToast.value = "Thư viện chưa có bài hát để tạo Smart Mix"
+                postToast("Thư viện chưa có bài hát để tạo Smart Mix")
             }
         }
     }
@@ -1023,7 +1109,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun importM3u(name: String, content: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val matched = container.playlistAndSmartMixManager.importFromM3u(name, content)
-            _statusToast.value = "Đã nhập M3U: $matched bài khớp trong thư viện"
+            postToast("Đã nhập M3U: $matched bài khớp trong thư viện")
         }
     }
 
@@ -1048,7 +1134,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     // Lyrics
     private fun loadLyricsForTrack(track: Track) {
-        viewModelScope.launch {
+        lyricsLoadJob?.cancel()
+        lyricsLoadJob = viewModelScope.launch {
             _lyricsState.value = _lyricsState.value.copy(isLoading = true, result = null)
             val res = container.lyricsEngine.loadLyricsForTrack(track)
             _lyricsState.value = _lyricsState.value.copy(isLoading = false, result = res)
@@ -1070,7 +1157,8 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun searchLyricsManual(query: String) {
-        viewModelScope.launch {
+        lyricsSearchJob?.cancel()
+        lyricsSearchJob = viewModelScope.launch {
             val hits = container.lyricsEngine.searchLyricsManual(query)
             _lyricsState.value = _lyricsState.value.copy(searchResults = hits)
         }
@@ -1103,14 +1191,14 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun setSafTreeUri(uri: Uri?) {
         viewModelScope.launch {
             container.settingsDataStore.setSafTreeUri(uri?.toString())
-            _statusToast.value = "Đã cập nhật thư mục tải nhạc"
+            postToast("Đã cập nhật thư mục tải nhạc")
         }
     }
 
     fun clearTemporaryCache() {
         viewModelScope.launch {
             val freed = container.cacheManager.clearTemporaryCache()
-            _statusToast.value = "Đã dọn ${freed / (1024 * 1024)} MB bộ đệm (giữ nguyên bài hát đã lưu)"
+            postToast("Đã dọn ${freed / (1024 * 1024)} MB bộ đệm (giữ nguyên bài hát đã lưu)")
         }
     }
 
@@ -1127,7 +1215,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun updateProxyConfig(config: ProxyConfig) {
         viewModelScope.launch {
             container.settingsDataStore.saveProxyConfig(config)
-            _statusToast.value = "Đã lưu cấu hình Proxy"
+            postToast("Đã lưu cấu hình Proxy")
         }
     }
 

@@ -643,13 +643,21 @@ class TelegramMessageScanner(
     }
 
     private suspend fun persistMergedTracks(results: List<ExtractedMessageResult>) {
+        if (results.isEmpty()) return
         val deduplicated = results.distinctBy { it.track.telegramChatId to it.track.telegramMessageId }
+        val chatIds = deduplicated.mapNotNull { it.track.telegramChatId }.distinct()
+        val existingForChats = chatIds.flatMap { cid ->
+            runCatching { trackDao.getTelegramTracksForChat(cid) }.getOrDefault(emptyList())
+        }
+        val existingByMsg = existingForChats
+            .filter { it.telegramChatId != null && it.telegramMessageId != null }
+            .associateBy { (it.telegramChatId ?: 0L) to (it.telegramMessageId ?: 0L) }
+        val existingById = existingForChats.associateBy { it.id }
+
         val entities = deduplicated.map { item ->
             val track = item.track
-            val existing = trackDao.findByTelegramMessage(
-                track.telegramChatId ?: 0L,
-                track.telegramMessageId ?: 0L
-            )
+            val msgKey = (track.telegramChatId ?: 0L) to (track.telegramMessageId ?: 0L)
+            val existing = existingByMsg[msgKey] ?: existingById[track.id]
             val merged = if (existing != null) {
                 val existingArtValid = existing.artworkUri?.takeIf {
                     it.startsWith("http") || File(it).exists()
@@ -684,11 +692,13 @@ class TelegramMessageScanner(
             merged.toEntity(blob)
         }
         trackDao.upsertTracks(entities)
+        val mergedEntityById = entities.associateBy { it.id }
 
         // Download higher-res TDLib album thumbnails cleanly and copy into persistent artwork storage
         deduplicated.forEach { item ->
             val thumb = item.thumbnailFile ?: return@forEach
-            val existingArtwork = trackDao.getTrackById(item.track.id)?.artworkUri
+            val existingArtwork = mergedEntityById[item.track.id]?.artworkUri
+                ?: existingByMsg[(item.track.telegramChatId ?: 0L) to (item.track.telegramMessageId ?: 0L)]?.artworkUri
             val hasFullArtwork = !existingArtwork.isNullOrBlank() &&
                 !existingArtwork.endsWith("_thumb.jpg") &&
                 (existingArtwork.startsWith("http") || File(existingArtwork).exists())
@@ -702,10 +712,13 @@ class TelegramMessageScanner(
                 val thumbPath = downloaded?.local?.path
                 val thumbFile = thumbPath?.let(::File)?.takeIf { it.exists() }
                 if (thumbFile != null) {
-                    val persistentPath = storageManager.saveArtworkFile(item.track.id, thumbFile.readBytes())
+                    val targetTrackId = mergedEntityById[item.track.id]?.id
+                        ?: existingByMsg[(item.track.telegramChatId ?: 0L) to (item.track.telegramMessageId ?: 0L)]?.id
+                        ?: item.track.id
+                    val persistentPath = storageManager.saveArtworkFile(targetTrackId, thumbFile.readBytes())
                         ?: thumbPath
                     trackDao.updateTrackMetadata(
-                        trackId = item.track.id,
+                        trackId = targetTrackId,
                         artworkUri = persistentPath,
                         bitrateKbps = 0,
                         sampleRateHz = 0,

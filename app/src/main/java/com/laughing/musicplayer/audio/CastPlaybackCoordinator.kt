@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class CastRouteUi(
     val id: String,
@@ -64,20 +65,26 @@ class CastPlaybackCoordinator(
     private val _uiState = MutableStateFlow(CastUiState())
     val uiState: StateFlow<CastUiState> = _uiState.asStateFlow()
 
-    private val mediaRouter: MediaRouter? = runCatching {
-        if (isRobolectricEnvironment()) null else MediaRouter.getInstance(appContext)
-    }.getOrNull()
+    private val initialized = AtomicBoolean(false)
 
-    private val routeSelector: MediaRouteSelector? = runCatching {
-        MediaRouteSelector.Builder()
-            .addControlCategory(
-                CastMediaControlIntent.categoryForCast(
-                    CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID
+    private val mediaRouter: MediaRouter? by lazy {
+        runCatching {
+            if (isRobolectricEnvironment()) null else MediaRouter.getInstance(appContext)
+        }.getOrNull()
+    }
+
+    private val routeSelector: MediaRouteSelector? by lazy {
+        runCatching {
+            MediaRouteSelector.Builder()
+                .addControlCategory(
+                    CastMediaControlIntent.categoryForCast(
+                        CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID
+                    )
                 )
-            )
-            .addControlCategory(MediaControlIntent.CATEGORY_REMOTE_PLAYBACK)
-            .build()
-    }.getOrNull()
+                .addControlCategory(MediaControlIntent.CATEGORY_REMOTE_PLAYBACK)
+                .build()
+        }.getOrNull()
+    }
 
     private var castContext: CastContext? = null
     private var castPlayer: CastPlayer? = null
@@ -96,9 +103,10 @@ class CastPlaybackCoordinator(
         override fun onRouteUnselected(router: MediaRouter, route: MediaRouter.RouteInfo, reason: Int) = refreshRoutes()
     }
 
-    init {
+    fun ensureInitialized() {
+        if (!initialized.compareAndSet(false, true)) return
         initializeCastContextSafely()
-        refreshAudioOutputs()
+        refreshAudioOutputsInternal()
     }
 
     private fun isRobolectricEnvironment(): Boolean {
@@ -173,6 +181,7 @@ class CastPlaybackCoordinator(
     }
 
     fun startDiscovery() {
+        ensureInitialized()
         val router = mediaRouter
         val selector = routeSelector
         if (router != null && selector != null && !callbackRegistered) {
@@ -187,7 +196,7 @@ class CastPlaybackCoordinator(
         }
         _uiState.value = _uiState.value.copy(isDiscovering = true)
         refreshRoutes()
-        refreshAudioOutputs()
+        refreshAudioOutputsInternal()
     }
 
     fun stopDiscovery() {
@@ -199,6 +208,7 @@ class CastPlaybackCoordinator(
     }
 
     fun refreshRoutes() {
+        ensureInitialized()
         val router = mediaRouter
         val selector = routeSelector
         val routes = if (router != null && selector != null) {
@@ -240,6 +250,11 @@ class CastPlaybackCoordinator(
     }
 
     fun refreshAudioOutputs() {
+        ensureInitialized()
+        refreshAudioOutputsInternal()
+    }
+
+    private fun refreshAudioOutputsInternal() {
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val outputs = if (audioManager != null) {
             val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)

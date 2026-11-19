@@ -2,16 +2,19 @@ package com.laughing.musicplayer.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -79,16 +82,17 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -102,12 +106,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
+import com.laughing.musicplayer.R
+import com.laughing.musicplayer.audio.PlaybackProgress
+import com.laughing.musicplayer.audio.PlaybackState
 import com.laughing.musicplayer.core.model.DownloadStatus
 import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.RepeatMode
 import com.laughing.musicplayer.core.model.SleepTimerMode
+import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.data.storage.AudioTagEditResult
+import com.laughing.musicplayer.lyrics.LyricsLine
 import com.laughing.musicplayer.ui.components.ArtworkImage
 import com.laughing.musicplayer.ui.components.AudioQualityBadge
 import com.laughing.musicplayer.ui.components.CastPickerSheet
@@ -118,13 +126,16 @@ import com.laughing.musicplayer.ui.components.SleepTimerAppleSheet
 import com.laughing.musicplayer.ui.components.TrackInfoSheet
 import com.laughing.musicplayer.ui.components.formatDurationMs
 import com.laughing.musicplayer.ui.theme.AppleMotion
+import com.laughing.musicplayer.ui.theme.ArtworkEffectsCache
 import com.laughing.musicplayer.ui.theme.LiquidGlassBase
 import com.laughing.musicplayer.ui.theme.LocalLiquidGlassPalette
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.theme.applePressScale
 import com.laughing.musicplayer.ui.theme.rememberReducedMotionEnabled
+import com.laughing.musicplayer.ui.viewmodel.LyricsUiState
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -140,6 +151,7 @@ fun NowPlayingSheet(
     val palette = LocalLiquidGlassPalette.current
     val reducedMotion = rememberReducedMotionEnabled()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
+    val liquidArtwork by viewModel.liquidGlassArtwork.collectAsStateWithLifecycle()
     val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
     val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
     val castState by viewModel.castUiState.collectAsStateWithLifecycle()
@@ -198,14 +210,27 @@ fun NowPlayingSheet(
             .background(LiquidGlassBase)
             .testTag("now_playing_sheet")
     ) {
-        // Edge-to-edge blurred artwork backdrop
-        if (!track.artworkUri.isNullOrBlank()) {
-            AsyncImage(
-                model = track.artworkUri,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().blur(52.dp)
+        // Pre-blurred cached artwork backdrop for smooth 120fps transitions
+        val defaultBlurred by produceState<ImageBitmap?>(initialValue = null) {
+            value = ArtworkEffectsCache.getDefaultBlurredArtwork(
+                context,
+                R.drawable.img_default_artwork_1794853244685
             )
+        }
+        val displayBlurred = liquidArtwork ?: defaultBlurred
+        Crossfade(
+            targetState = displayBlurred,
+            animationSpec = tween(durationMillis = if (reducedMotion) 0 else 360),
+            label = "now_playing_blurred_bg"
+        ) { bmp ->
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
         Box(
             modifier = Modifier
@@ -266,45 +291,20 @@ fun NowPlayingSheet(
                 }
             }
             if (playback.sleepTimerMode != SleepTimerMode.OFF || castState.connectedDeviceName != null) {
-                val badgeText = buildList {
-                    when (playback.sleepTimerMode) {
-                        SleepTimerMode.AFTER_MINUTES -> add(
-                            if (playback.sleepFadeOutActive) {
-                                "Giảm dần âm lượng • còn ${formatDurationMs(playback.sleepTimerRemainingMs)}"
-                            } else {
-                                "Hẹn tắt còn ${formatDurationMs(playback.sleepTimerRemainingMs)}"
-                            }
-                        )
-                        SleepTimerMode.END_OF_CURRENT_TRACK -> add("Tắt sau bài hát hiện tại")
-                        SleepTimerMode.AFTER_N_TRACKS -> add("Tắt sau ${playback.sleepTimerRemainingTracks} bài nữa")
-                        SleepTimerMode.OFF -> Unit
-                    }
-                    castState.connectedDeviceName?.let { add("Cast: $it") }
-                }.joinToString(" • ")
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = colors.accent.copy(alpha = 0.24f),
-                        modifier = Modifier.clickable {
-                            if (playback.sleepTimerMode != SleepTimerMode.OFF) {
-                                showSleepTimerSheet = true
-                            } else {
-                                viewModel.refreshCastAndAudioOutputs()
-                                showCastPickerSheet = true
-                            }
+                NowPlayingStatusBadge(
+                    playback = playback,
+                    progressFlow = viewModel.playbackProgress,
+                    castDeviceName = castState.connectedDeviceName,
+                    accentColor = colors.accent,
+                    onClick = {
+                        if (playback.sleepTimerMode != SleepTimerMode.OFF) {
+                            showSleepTimerSheet = true
+                        } else {
+                            viewModel.refreshCastAndAudioOutputs()
+                            showCastPickerSheet = true
                         }
-                    ) {
-                        Text(
-                            text = badgeText,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
                     }
-                }
+                )
             }
 
             if (!showLyricsView) {
@@ -340,7 +340,8 @@ fun NowPlayingSheet(
                                 artworkUri = track.artworkUri,
                                 contentDescription = track.title,
                                 modifier = Modifier.fillMaxSize(),
-                                cornerRadius = 24.dp
+                                cornerRadius = 24.dp,
+                                decodeSizePx = 720
                             )
                         }
                     }
@@ -377,61 +378,14 @@ fun NowPlayingSheet(
                     }
 
                     val lines = lyricsState.result?.lines.orEmpty()
-                    if (lines.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    "Chưa có lời bài hát cho bài này",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = Color.White.copy(alpha = 0.80f)
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Button(
-                                    onClick = { showLyricsSearchDialog = true },
-                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accent)
-                                ) {
-                                    Text("Tìm lời bài hát thủ công")
-                                }
-                            }
-                        }
-                    } else {
-                        val effectivePos = playback.positionMs + lyricsState.offsetMs
-                        val activeIdx = lines.indexOfLast { it.timestampMs <= effectivePos }.coerceAtLeast(0)
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            itemsIndexed(lines) { idx, line ->
-                                val isActive = idx == activeIdx
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { viewModel.seekTo(line.timestampMs) }
-                                ) {
-                                    Text(
-                                        text = line.text,
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isActive) Color.White else Color.White.copy(alpha = 0.48f)
-                                    )
-                                    if (lyricsState.showRomanization && !line.romanization.isNullOrBlank()) {
-                                        Text(
-                                            text = line.romanization,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = if (isActive) Color.White.copy(alpha = 0.86f) else Color.White.copy(alpha = 0.35f)
-                                        )
-                                    }
-                                    if (lyricsState.showTranslation && !line.translation.isNullOrBlank()) {
-                                        Text(
-                                            text = line.translation,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = Color.White.copy(alpha = 0.68f)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    NowPlayingLyricsBody(
+                        lines = lines,
+                        lyricsState = lyricsState,
+                        progressFlow = viewModel.playbackProgress,
+                        accentColor = colors.accent,
+                        onOpenSearch = { showLyricsSearchDialog = true },
+                        onSeekTo = { pos -> viewModel.seekTo(pos) }
+                    )
                 }
             }
 
@@ -488,53 +442,13 @@ fun NowPlayingSheet(
                     }
                 }
 
-                // Seekbar
-                val dur = playback.durationMs.coerceAtLeast(1L)
-                var draggingPos by remember(track.id) { mutableStateOf<Float?>(null) }
-                val sliderVal = draggingPos ?: (playback.positionMs.toFloat() / dur).coerceIn(0f, 1f)
-
-                Column {
-                    Slider(
-                        value = sliderVal,
-                        onValueChange = { draggingPos = it },
-                        onValueChangeFinished = {
-                            draggingPos?.let { viewModel.seekTo((it * dur).toLong()) }
-                            draggingPos = null
-                        },
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White,
-                            activeTrackColor = Color.White,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.28f)
-                        )
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = formatDurationMs(playback.positionMs),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.White.copy(alpha = 0.74f)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            AudioQualityBadge(
-                                track = track,
-                                onDarkSurface = true
-                            )
-                        }
-                        Text(
-                            text = formatDurationMs(playback.durationMs),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.White.copy(alpha = 0.74f)
-                        )
-                    }
-                }
+                // Seekbar with isolated progress ticks
+                NowPlayingSeekBar(
+                    track = track,
+                    fallbackDurationMs = playback.durationMs,
+                    progressFlow = viewModel.playbackProgress,
+                    onSeekTo = { pos -> viewModel.seekTo(pos) }
+                )
 
                 // Transport Controls
                 Row(
@@ -675,6 +589,7 @@ fun NowPlayingSheet(
                 trackTitle = track.title,
                 trackArtist = track.artist,
                 playback = playback,
+                progressFlow = viewModel.playbackProgress,
                 accentColor = colors.accent,
                 onUnlock = { viewModel.setSleepCalmLockEnabled(false) }
             )
@@ -716,10 +631,12 @@ fun NowPlayingSheet(
     }
 
     if (showMoreSheet) {
+        val progressState by viewModel.playbackProgress.collectAsStateWithLifecycle()
         NowPlayingMoreSheet(
             track = track,
             playback = playback,
             sleepCalmLockEnabled = sleepCalmLockEnabled,
+            remainingTimerMs = progressState.sleepTimerRemainingMs,
             onDismiss = { showMoreSheet = false },
             onOpenSleepTimer = {
                 showMoreSheet = false
@@ -742,8 +659,10 @@ fun NowPlayingSheet(
     }
 
     if (showSleepTimerSheet) {
+        val progressState by viewModel.playbackProgress.collectAsStateWithLifecycle()
         SleepTimerAppleSheet(
             playback = playback,
+            remainingTimerMs = progressState.sleepTimerRemainingMs,
             onDismiss = { showSleepTimerSheet = false },
             onSelectMinutes = { min -> viewModel.setSleepTimerMinutes(min) },
             onSelectEndOfTrack = { viewModel.setSleepTimerEndOfTrack() },
@@ -839,19 +758,188 @@ fun NowPlayingSheet(
 }
 
 @Composable
+private fun NowPlayingStatusBadge(
+    playback: PlaybackState,
+    progressFlow: StateFlow<PlaybackProgress>,
+    castDeviceName: String?,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    val progress by progressFlow.collectAsStateWithLifecycle()
+    val badgeText = buildList {
+        when (playback.sleepTimerMode) {
+            SleepTimerMode.AFTER_MINUTES -> add(
+                if (playback.sleepFadeOutActive) {
+                    "Giảm dần âm lượng • còn ${formatDurationMs(progress.sleepTimerRemainingMs)}"
+                } else {
+                    "Hẹn tắt còn ${formatDurationMs(progress.sleepTimerRemainingMs)}"
+                }
+            )
+            SleepTimerMode.END_OF_CURRENT_TRACK -> add("Tắt sau bài hát hiện tại")
+            SleepTimerMode.AFTER_N_TRACKS -> add("Tắt sau ${playback.sleepTimerRemainingTracks} bài nữa")
+            SleepTimerMode.OFF -> Unit
+        }
+        castDeviceName?.let { add("Cast: $it") }
+    }.joinToString(" • ")
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = accentColor.copy(alpha = 0.24f),
+            modifier = Modifier.clickable(onClick = onClick)
+        ) {
+            Text(
+                text = badgeText,
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun NowPlayingLyricsBody(
+    lines: List<LyricsLine>,
+    lyricsState: LyricsUiState,
+    progressFlow: StateFlow<PlaybackProgress>,
+    accentColor: Color,
+    onOpenSearch: () -> Unit,
+    onSeekTo: (Long) -> Unit
+) {
+    if (lines.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "Chưa có lời bài hát cho bài này",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White.copy(alpha = 0.80f)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onOpenSearch,
+                    colors = ButtonDefaults.buttonColors(containerColor = accentColor)
+                ) {
+                    Text("Tìm lời bài hát thủ công")
+                }
+            }
+        }
+    } else {
+        val progress by progressFlow.collectAsStateWithLifecycle()
+        val effectivePos = progress.positionMs + lyricsState.offsetMs
+        val activeIdx = lines.indexOfLast { it.timestampMs <= effectivePos }.coerceAtLeast(0)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            itemsIndexed(lines) { idx, line ->
+                val isActive = idx == activeIdx
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSeekTo(line.timestampMs) }
+                ) {
+                    Text(
+                        text = line.text,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isActive) Color.White else Color.White.copy(alpha = 0.48f)
+                    )
+                    if (lyricsState.showRomanization && !line.romanization.isNullOrBlank()) {
+                        Text(
+                            text = line.romanization,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isActive) Color.White.copy(alpha = 0.86f) else Color.White.copy(alpha = 0.35f)
+                        )
+                    }
+                    if (lyricsState.showTranslation && !line.translation.isNullOrBlank()) {
+                        Text(
+                            text = line.translation,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.68f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NowPlayingSeekBar(
+    track: Track,
+    fallbackDurationMs: Long,
+    progressFlow: StateFlow<PlaybackProgress>,
+    onSeekTo: (Long) -> Unit
+) {
+    val progress by progressFlow.collectAsStateWithLifecycle()
+    val dur = (progress.durationMs.takeIf { it > 0L } ?: fallbackDurationMs).coerceAtLeast(1L)
+    var draggingPos by remember(track.id) { mutableStateOf<Float?>(null) }
+    val sliderVal = draggingPos ?: (progress.positionMs.toFloat() / dur).coerceIn(0f, 1f)
+
+    Column {
+        Slider(
+            value = sliderVal,
+            onValueChange = { draggingPos = it },
+            onValueChangeFinished = {
+                draggingPos?.let { onSeekTo((it * dur).toLong()) }
+                draggingPos = null
+            },
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = Color.White,
+                inactiveTrackColor = Color.White.copy(alpha = 0.28f)
+            )
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatDurationMs(progress.positionMs),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White.copy(alpha = 0.74f)
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                AudioQualityBadge(
+                    track = track,
+                    onDarkSurface = true
+                )
+            }
+            Text(
+                text = formatDurationMs(dur.takeIf { progress.durationMs > 0L || fallbackDurationMs > 0L } ?: 0L),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White.copy(alpha = 0.74f)
+            )
+        }
+    }
+}
+
+@Composable
 private fun SleepCalmLockOverlay(
     trackTitle: String,
     trackArtist: String,
-    playback: com.laughing.musicplayer.audio.PlaybackState,
+    playback: PlaybackState,
+    progressFlow: StateFlow<PlaybackProgress>,
     accentColor: Color,
     onUnlock: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val progress by progressFlow.collectAsStateWithLifecycle()
     var holdProgress by remember { mutableFloatStateOf(0f) }
     var isHolding by remember { mutableStateOf(false) }
 
     val timerText = when (playback.sleepTimerMode) {
-        SleepTimerMode.AFTER_MINUTES -> "Tắt nhạc sau ${formatDurationMs(playback.sleepTimerRemainingMs)}"
+        SleepTimerMode.AFTER_MINUTES -> "Tắt nhạc sau ${formatDurationMs(progress.sleepTimerRemainingMs)}"
         SleepTimerMode.END_OF_CURRENT_TRACK -> "Sẽ dừng sau bài hát hiện tại"
         SleepTimerMode.AFTER_N_TRACKS -> "Sẽ dừng sau ${playback.sleepTimerRemainingTracks} bài nữa"
         SleepTimerMode.OFF -> "Chế độ ngủ dịu mắt đang bật"

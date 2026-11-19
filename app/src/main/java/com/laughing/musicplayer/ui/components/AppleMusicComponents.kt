@@ -1,12 +1,14 @@
 package com.laughing.musicplayer.ui.components
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -57,15 +59,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -73,6 +77,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.laughing.musicplayer.R
 import com.laughing.musicplayer.core.model.DownloadStatus
 import com.laughing.musicplayer.core.model.MusicSource
@@ -80,6 +86,7 @@ import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.model.toAudioQualityDisplay
 import com.laughing.musicplayer.ui.theme.AppleMotion
+import com.laughing.musicplayer.ui.theme.ArtworkEffectsCache
 import com.laughing.musicplayer.ui.theme.LiquidGlassBase
 import com.laughing.musicplayer.ui.theme.LocalLiquidGlassPalette
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
@@ -90,36 +97,41 @@ import com.laughing.musicplayer.ui.theme.rememberReducedMotionEnabled
 fun AppleMusicSurfaceBackground(
     artworkUri: String?,
     modifier: Modifier = Modifier,
+    blurredArtwork: ImageBitmap? = null,
     content: @Composable () -> Unit
 ) {
+    val context = LocalContext.current
     val colors = LocalMusicPlayerColors.current
     val palette = LocalLiquidGlassPalette.current
 
     Box(modifier = modifier.fillMaxSize()) {
         if (colors.themeMode == ThemeMode.LIQUID_GLASS) {
+            val defaultBlurred by produceState<ImageBitmap?>(initialValue = null) {
+                value = ArtworkEffectsCache.getDefaultBlurredArtwork(
+                    context,
+                    R.drawable.img_default_artwork_1794853244685
+                )
+            }
+            val displayBitmap = blurredArtwork ?: defaultBlurred
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(LiquidGlassBase)
             )
-            if (!artworkUri.isNullOrBlank()) {
-                AsyncImage(
-                    model = artworkUri,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .blur(48.dp)
-                )
-            } else {
-                Image(
-                    painter = painterResource(R.drawable.img_default_artwork_1794853244685),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .blur(44.dp)
-                )
+            Crossfade(
+                targetState = displayBitmap,
+                animationSpec = tween(durationMillis = 380),
+                label = "surface_blurred_artwork"
+            ) { bmp ->
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
             Box(
                 modifier = Modifier
@@ -269,8 +281,10 @@ fun ArtworkImage(
     artworkUri: String?,
     contentDescription: String,
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 14.dp
+    cornerRadius: Dp = 14.dp,
+    decodeSizePx: Int = 256
 ) {
+    val context = LocalContext.current
     val shape = RoundedCornerShape(cornerRadius)
     if (artworkUri.isNullOrBlank()) {
         Image(
@@ -280,8 +294,16 @@ fun ArtworkImage(
             modifier = modifier.clip(shape)
         )
     } else {
+        val request = remember(artworkUri, decodeSizePx, context) {
+            ImageRequest.Builder(context)
+                .data(artworkUri)
+                .size(decodeSizePx)
+                .precision(Precision.INEXACT)
+                .crossfade(120)
+                .build()
+        }
         AsyncImage(
-            model = artworkUri,
+            model = request,
             contentDescription = contentDescription,
             placeholder = painterResource(R.drawable.img_default_artwork_1794853244685),
             error = painterResource(R.drawable.img_default_artwork_1794853244685),

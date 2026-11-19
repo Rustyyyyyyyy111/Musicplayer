@@ -61,7 +61,6 @@ import com.laughing.musicplayer.ui.components.ArtworkImage
 import com.laughing.musicplayer.ui.components.TrackRowItem
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
-import kotlinx.coroutines.delay
 
 @Composable
 fun SearchScreen(
@@ -78,7 +77,6 @@ fun SearchScreen(
 
     LaunchedEffect(textFieldValue.text) {
         if (textFieldValue.text != searchState.query) {
-            delay(300L)
             viewModel.updateSearchQuery(textFieldValue.text)
         }
     }

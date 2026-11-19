@@ -484,7 +484,10 @@ class YouTubeMusicRepository(
     private suspend fun mergeAndPersistTracks(tracks: List<Track>): List<Track> {
         if (tracks.isEmpty()) return emptyList()
         val distinctTracks = tracks.distinctBy { it.id }
-        val existingMap = trackDao.getAllTracksOnce().associateBy { it.id }
+        val existingMap = distinctTracks.map { it.id }
+            .chunked(500)
+            .flatMap { chunk -> trackDao.getTracksByIds(chunk) }
+            .associateBy { it.id }
         val mergedDomain = distinctTracks.map { t ->
             val existing = existingMap[t.id]
             if (existing != null) {
