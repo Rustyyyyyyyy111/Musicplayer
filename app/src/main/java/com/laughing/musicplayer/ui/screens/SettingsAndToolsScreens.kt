@@ -3,6 +3,7 @@ package com.laughing.musicplayer.ui.screens
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,9 +30,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BrightnessHigh
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Download
@@ -51,6 +58,7 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VpnLock
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -99,6 +107,7 @@ import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.data.telegram.TelegramAuthUiState
 import com.laughing.musicplayer.ui.components.AppleAlertDialog
 import com.laughing.musicplayer.ui.components.AppleCard
+import com.laughing.musicplayer.ui.components.AppleModalBottomSheet
 import com.laughing.musicplayer.ui.components.ArtworkImage
 import com.laughing.musicplayer.ui.components.rememberLocalMusicScannerLauncher
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
@@ -108,6 +117,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: MusicPlayerViewModel,
@@ -132,6 +142,7 @@ fun SettingsScreen(
     val offlineScanState by viewModel.offlineScanState.collectAsStateWithLifecycle()
     val openScannerSheet = rememberLocalMusicScannerLauncher(viewModel)
 
+    var showAppearanceSheet by remember { mutableStateOf(false) }
     var showCacheLimitDialog by remember { mutableStateOf(false) }
     var showProxyDialog by remember { mutableStateOf(false) }
     var showVersionDialog by remember { mutableStateOf(false) }
@@ -175,45 +186,67 @@ fun SettingsScreen(
             )
         }
 
-        // Section 1: Giao diện
+        // Section 1: Hiển thị (single consolidated Appearance entry)
         item {
-            SettingsSectionHeader("Giao diện")
+            SettingsSectionHeader("Hiển thị")
             AppleCard(cornerRadius = 22.dp) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    SettingsNavRow(
-                        icon = Icons.Filled.Palette,
-                        title = "Đổi giao diện",
-                        subtitle = prefs.themeMode.labelVi,
-                        onClick = {
-                            val next = when (prefs.themeMode) {
-                                ThemeMode.LIGHT -> ThemeMode.DARK
-                                ThemeMode.DARK -> ThemeMode.LIQUID_GLASS
-                                ThemeMode.LIQUID_GLASS -> ThemeMode.LIGHT
-                            }
-                            viewModel.setThemeMode(next)
-                        },
-                        testTag = "setting_theme_cycle"
-                    )
-                    SettingsDivider()
-                    ThemeChoiceRow(
-                        label = "Chế độ sáng",
-                        selected = prefs.themeMode == ThemeMode.LIGHT,
-                        onClick = { viewModel.setThemeMode(ThemeMode.LIGHT) },
-                        testTag = "setting_theme_light"
-                    )
-                    SettingsDivider()
-                    ThemeChoiceRow(
-                        label = "Chế độ tối",
-                        selected = prefs.themeMode == ThemeMode.DARK,
-                        onClick = { viewModel.setThemeMode(ThemeMode.DARK) },
-                        testTag = "setting_theme_dark"
-                    )
-                    SettingsDivider()
-                    ThemeChoiceRow(
-                        label = "Liquid Glass",
-                        selected = prefs.themeMode == ThemeMode.LIQUID_GLASS,
-                        onClick = { viewModel.setThemeMode(ThemeMode.LIQUID_GLASS) },
-                        testTag = "setting_theme_liquid_glass"
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showAppearanceSheet = true }
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
+                        .testTag("setting_appearance_row"),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.accent.copy(alpha = 0.14f),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Palette,
+                                contentDescription = "Giao diện",
+                                tint = colors.accent,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Giao diện",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "Chủ đề ứng dụng: ${prefs.themeMode.labelVi}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = colors.accent.copy(alpha = 0.15f),
+                        border = BorderStroke(0.75.dp, colors.accent.copy(alpha = 0.35f)),
+                        modifier = Modifier.testTag("setting_active_theme_badge")
+                    ) {
+                        Text(
+                            text = prefs.themeMode.labelVi,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.accent,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = colors.textSecondary
                     )
                 }
             }
@@ -310,26 +343,84 @@ fun SettingsScreen(
                         testTag = "setting_yt_music"
                     )
                     SettingsDivider()
-                    SettingsNavRow(
-                        icon = Icons.Filled.FolderOpen,
-                        title = "Quét nhạc trong máy",
-                        subtitle = when {
-                            offlineScanState.isScanning -> {
-                                val current = offlineScanState.currentTitle.takeIf { it.isNotBlank() }?.let { " • $it" }.orEmpty()
-                                "Đang quét (${offlineScanState.scannedCount} bài hát)$current"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !offlineScanState.isScanning) { openScannerSheet() }
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                            .testTag("setting_scan_local_music"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.accent.copy(alpha = 0.16f),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.FolderOpen,
+                                    contentDescription = "Quét nhạc trong máy",
+                                    tint = colors.accent,
+                                    modifier = Modifier.size(22.dp)
+                                )
                             }
-                            !offlineScanState.lastSummaryMessage.isNullOrBlank() -> offlineScanState.lastSummaryMessage!!
-                            else -> "Quét toàn bộ thiết bị hoặc chọn thư mục (.m4a, .aac, .mp3, .flac, .opus, .wav, .ogg)"
-                        },
-                        onClick = { if (!offlineScanState.isScanning) openScannerSheet() },
-                        testTag = "setting_scan_local_music"
-                    )
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "Quét nhạc trong máy",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = when {
+                                    offlineScanState.isScanning -> {
+                                        val current = offlineScanState.currentTitle
+                                            .takeIf { it.isNotBlank() }
+                                            ?.let { " • $it" }
+                                            .orEmpty()
+                                        "Đang quét (${offlineScanState.scannedCount} bài hát)$current"
+                                    }
+                                    !offlineScanState.lastSummaryMessage.isNullOrBlank() ->
+                                        offlineScanState.lastSummaryMessage!!
+                                    else -> "Quét toàn bộ thiết bị hoặc chọn thư mục (.mp3, .m4a, .flac, .opus, .wav, .ogg)"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (!offlineScanState.lastSummaryMessage.isNullOrBlank() || offlineScanState.isScanning) {
+                                    colors.accent
+                                } else {
+                                    colors.textSecondary
+                                },
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = colors.accent.copy(alpha = 0.15f),
+                            border = BorderStroke(0.75.dp, colors.accent.copy(alpha = 0.35f))
+                        ) {
+                            Text(
+                                text = if (offlineScanState.isScanning) "Đang quét" else "Quét ngay",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.accent,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
                     if (offlineScanState.isScanning) {
                         LinearProgressIndicator(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 6.dp)
-                                .height(3.dp),
+                                .height(3.dp)
+                                .testTag("setting_scan_progress"),
                             color = colors.accent,
                             trackColor = colors.divider
                         )
@@ -573,6 +664,123 @@ fun SettingsScreen(
                         onClick = { showVersionDialog = true },
                         testTag = "setting_version_info"
                     )
+                }
+            }
+        }
+    }
+
+    if (showAppearanceSheet) {
+        AppleModalBottomSheet(onDismissRequest = { showAppearanceSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp)
+                    .testTag("appearance_selector_sheet"),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Chọn giao diện",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.textPrimary
+                )
+                Text(
+                    text = "Tùy chỉnh phong cách hiển thị và hiệu ứng nền phát nhạc.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textSecondary
+                )
+
+                val themeOptions = listOf(
+                    Triple(ThemeMode.LIGHT, "Chế độ sáng", "Nền sáng tinh tế kiểu Apple Music") to (Icons.Filled.BrightnessHigh to "setting_theme_light"),
+                    Triple(ThemeMode.DARK, "Chế độ tối", "Nền đen OLED thuần túy tiết kiệm pin") to (Icons.Filled.DarkMode to "setting_theme_dark"),
+                    Triple(ThemeMode.LIQUID_GLASS, "Liquid Glass", "Nền mờ chuyển sắc theo ảnh bìa bài hát") to (Icons.Filled.AutoAwesome to "setting_theme_liquid_glass")
+                )
+
+                themeOptions.forEach { (modeInfo, iconAndTag) ->
+                    val (mode, label, desc) = modeInfo
+                    val (icon, tag) = iconAndTag
+                    val selected = prefs.themeMode == mode
+                    Surface(
+                        onClick = { viewModel.setThemeMode(mode) },
+                        shape = RoundedCornerShape(16.dp),
+                        color = colors.modalCardSurface,
+                        border = BorderStroke(
+                            width = if (selected) 1.5.dp else 1.dp,
+                            color = if (selected) colors.accent else colors.modalBorder
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag(tag)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (selected) colors.accent.copy(alpha = 0.18f) else colors.modalSurface,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = label,
+                                        tint = if (selected) colors.accent else colors.textSecondary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.textPrimary
+                                )
+                                Text(
+                                    text = desc,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.textSecondary
+                                )
+                            }
+                            if (selected) {
+                                Icon(
+                                    imageVector = Icons.Filled.CheckCircle,
+                                    contentDescription = "Đang chọn",
+                                    tint = colors.accent
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = colors.modalCardSurface,
+                    border = BorderStroke(1.dp, colors.modalBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SettingsToggleRow(
+                        title = "Lời bài hát trên Màn hình khóa",
+                        subtitle = "Hiển thị lời bài hát đồng bộ trên thông báo phát nhạc",
+                        checked = prefs.showLyricsOnLockScreen,
+                        onCheckedChange = { viewModel.setShowLyricsOnLockScreen(it) }
+                    )
+                }
+
+                TextButton(
+                    onClick = { showAppearanceSheet = false },
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .heightIn(min = 48.dp)
+                        .testTag("appearance_sheet_close_btn")
+                ) {
+                    Text("Đóng", color = colors.accent, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -1089,30 +1297,6 @@ private fun SettingsToggleRow(
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = colors.accent)
         )
-    }
-}
-
-@Composable
-private fun ThemeChoiceRow(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    testTag: String
-) {
-    val colors = LocalMusicPlayerColors.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag(testTag)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, style = MaterialTheme.typography.titleMedium, color = colors.textPrimary)
-        if (selected) {
-            Text("Đang chọn", style = MaterialTheme.typography.labelLarge, color = colors.accent)
-        }
     }
 }
 

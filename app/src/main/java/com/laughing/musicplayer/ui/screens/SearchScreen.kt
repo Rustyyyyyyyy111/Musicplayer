@@ -1,5 +1,11 @@
 package com.laughing.musicplayer.ui.screens
 
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,6 +29,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,11 +52,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.model.UnifiedSearchTab
@@ -74,6 +83,26 @@ fun SearchScreen(
 
     // Local TextFieldValue keeps IME composition & cursor selection completely isolated from ViewModel flows
     var textFieldValue by remember { mutableStateOf(TextFieldValue(searchState.query)) }
+
+    val voiceSearchLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                ?.trim()
+                .orEmpty()
+            if (spoken.isNotBlank()) {
+                textFieldValue = TextFieldValue(
+                    text = spoken,
+                    selection = TextRange(spoken.length)
+                )
+                viewModel.updateSearchQuery(spoken)
+                viewModel.submitUnifiedSearch()
+            }
+        }
+    }
 
     LaunchedEffect(textFieldValue.text) {
         if (textFieldValue.text != searchState.query) {
@@ -174,12 +203,35 @@ fun SearchScreen(
                 },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
-                    if (textFieldValue.text.isNotEmpty()) {
-                        IconButton(onClick = {
-                            textFieldValue = TextFieldValue("")
-                            viewModel.updateSearchQuery("")
-                        }) {
-                            Icon(Icons.Filled.Clear, contentDescription = "Xóa")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (textFieldValue.text.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    textFieldValue = TextFieldValue("")
+                                    viewModel.updateSearchQuery("")
+                                },
+                                modifier = Modifier.testTag("search_clear_btn")
+                            ) {
+                                Icon(Icons.Filled.Clear, contentDescription = "Xóa")
+                            }
+                        }
+                        IconButton(
+                            onClick = {
+                                try {
+                                    voiceSearchLauncher.launch(buildVoiceSearchIntent())
+                                } catch (_: ActivityNotFoundException) {
+                                    viewModel.postToast("Thiết bị không hỗ trợ nhập giọng nói")
+                                } catch (_: SecurityException) {
+                                    viewModel.postToast("Thiết bị không hỗ trợ nhập giọng nói")
+                                }
+                            },
+                            modifier = Modifier.testTag("search_voice_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Mic,
+                                contentDescription = "Tìm kiếm bằng giọng nói",
+                                tint = colors.accent
+                            )
                         }
                     }
                 },
@@ -731,4 +783,12 @@ private fun UnifiedTrackRow(
         onDeleteLocal = { viewModel.deleteLocalTrackOnly(track) },
         modifier = modifier
     )
+}
+
+internal fun buildVoiceSearchIntent(locale: Locale = Locale.getDefault()): Intent {
+    return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale.toLanguageTag())
+        putExtra(RecognizerIntent.EXTRA_PROMPT, "Nói tên bài hát hoặc nghệ sĩ...")
+    }
 }

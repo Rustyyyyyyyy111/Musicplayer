@@ -123,15 +123,22 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("setting_appearance_row").assertIsDisplayed()
         composeRule.onNodeWithText("Giao diện").assertIsDisplayed()
+        composeRule.onNodeWithTag("setting_active_theme_badge").assertIsDisplayed()
+        composeRule.onNodeWithTag("setting_appearance_row").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("appearance_selector_sheet").assertIsDisplayed()
         composeRule.onNodeWithTag("setting_theme_light").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("setting_theme_dark").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("setting_theme_liquid_glass").performClick()
         composeRule.waitForIdle()
+        composeRule.onNodeWithTag("appearance_sheet_close_btn").performClick()
+        composeRule.waitForIdle()
 
-        // Consolidated Nguồn nhạc items: Telegram Login, Sources, Sync Now, YouTube Login
+        // Consolidated Nguồn nhạc items: Telegram Login, Sources, Sync Now, YouTube Login, Local Music Scan
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasText("Nguồn nhạc"))
         composeRule.onNodeWithText("Nguồn nhạc").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_tg_login"))
@@ -144,6 +151,9 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("setting_yt_login").assertIsDisplayed()
         composeRule.onNodeWithText("Đăng nhập YouTube").assertIsDisplayed()
         composeRule.onNodeWithText("Chưa đăng nhập").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_scan_local_music"))
+        composeRule.onNodeWithTag("setting_scan_local_music").assertIsDisplayed()
+        composeRule.onNodeWithText("Quét nhạc trong máy").assertIsDisplayed()
 
         // Crossfade slider & Car Mode in Settings
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasText("Nhạc và phát lại"))
@@ -371,9 +381,12 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("search_tab_offline").assertIsDisplayed()
         composeRule.onNodeWithTag("search_tab_telegram").assertIsDisplayed()
         composeRule.onNodeWithTag("search_input").assertIsDisplayed()
+        composeRule.onNodeWithTag("search_voice_btn").assertIsDisplayed()
         composeRule.onNodeWithTag("search_input").performTextInput("đúng lúc")
         composeRule.waitForIdle()
         composeRule.onNodeWithText("đúng lúc").assertIsDisplayed()
+        composeRule.onNodeWithTag("search_clear_btn").assertIsDisplayed()
+        composeRule.onNodeWithTag("search_voice_btn").assertIsDisplayed()
 
         composeRule.onNodeWithTag("unified_search_tabs").performScrollToNode(hasTestTag("search_tab_youtube_music"))
         composeRule.onNodeWithTag("search_tab_youtube_music").assertIsDisplayed().performClick()

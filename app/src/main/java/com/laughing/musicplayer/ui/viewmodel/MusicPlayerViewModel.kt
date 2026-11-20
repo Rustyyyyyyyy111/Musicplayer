@@ -459,7 +459,7 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    private fun postToast(message: String) {
+    fun postToast(message: String) {
         _statusToast.value = message
         _toastChannel.trySend(message)
     }

@@ -2,6 +2,7 @@ package com.laughing.musicplayer
 
 import android.content.Context
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
@@ -15,6 +16,7 @@ import com.laughing.musicplayer.core.util.PermissionOnboardingHelper
 import com.laughing.musicplayer.core.util.SecureCredentialStore
 import com.laughing.musicplayer.data.local.SettingsDataStore
 import com.laughing.musicplayer.ui.components.FirstLaunchPermissionsDialog
+import com.laughing.musicplayer.ui.screens.buildVoiceSearchIntent
 import com.laughing.musicplayer.ui.theme.LiquidGlassModalBorder
 import com.laughing.musicplayer.ui.theme.LiquidGlassModalScrim
 import com.laughing.musicplayer.ui.theme.LiquidGlassModalSurface
@@ -29,6 +31,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -130,6 +133,21 @@ class OnboardingAndLiquidGlassModalRobolectricTest {
         composeRule.onNodeWithTag("first_launch_permissions_dialog").assertIsDisplayed()
         assertTrue(
             composeRule.onAllNodes(hasTestTag("perm_card_xiaomi_miui")).fetchSemanticsNodes().isEmpty()
+        )
+    }
+
+    @Test
+    fun voiceSearchIntentConfiguresFreeFormAndDefaultLocale() {
+        val locale = Locale.forLanguageTag("vi-VN")
+        val intent = buildVoiceSearchIntent(locale)
+        assertEquals(RecognizerIntent.ACTION_RECOGNIZE_SPEECH, intent.action)
+        assertEquals(
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL)
+        )
+        assertEquals(
+            locale.toLanguageTag(),
+            intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE)
         )
     }
 }
