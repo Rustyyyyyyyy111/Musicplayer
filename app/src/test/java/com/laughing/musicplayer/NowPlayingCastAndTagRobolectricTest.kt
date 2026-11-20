@@ -1,22 +1,32 @@
 package com.laughing.musicplayer
 
 import android.app.Application
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.media3.common.util.UnstableApi
 import androidx.test.core.app.ApplicationProvider
+import com.laughing.musicplayer.audio.PlaybackState
 import com.laughing.musicplayer.core.model.AudioFormat
 import com.laughing.musicplayer.core.model.GenreType
 import com.laughing.musicplayer.core.model.MusicSource
+import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.data.storage.AudioTagEditRequest
 import com.laughing.musicplayer.data.storage.AudioTagEditResult
 import com.laughing.musicplayer.data.storage.AudioTagEditor
 import com.laughing.musicplayer.data.storage.TrackMetadataInspector
+import com.laughing.musicplayer.ui.components.NowPlayingMoreSheet
+import com.laughing.musicplayer.ui.screens.NowPlayingQueueSheet
+import com.laughing.musicplayer.ui.theme.MusicPlayerTheme
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -29,6 +39,9 @@ import java.nio.ByteOrder
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class NowPlayingCastAndTagRobolectricTest {
+
+    @get:Rule
+    val composeRule = createComposeRule()
 
     @Test
     fun `writeTagsToFile writes ID3v2 UTF-16 Vietnamese tags into MP3 and preserves audio payload`() {
@@ -182,5 +195,82 @@ class NowPlayingCastAndTagRobolectricTest {
             )
         )
         assertTrue(res is AudioTagEditResult.NotOfflineTrack)
+    }
+
+    @Test
+    fun `NowPlayingMoreSheet hides drag handle while menu items remain displayed`() {
+        val sampleTrack = Track(
+            id = "more_1",
+            title = "Em Của Ngày Hôm Qua (Acoustic)",
+            artist = "Sơn Tùng M-TP",
+            album = "Single",
+            source = MusicSource.OFFLINE,
+            durationMs = 230_000L,
+            format = AudioFormat.MP3
+        )
+        composeRule.setContent {
+            MusicPlayerTheme(themeMode = ThemeMode.LIQUID_GLASS) {
+                NowPlayingMoreSheet(
+                    track = sampleTrack,
+                    playback = PlaybackState(),
+                    sleepCalmLockEnabled = false,
+                    onDismiss = {},
+                    onOpenSleepTimer = {},
+                    onOpenTrackInfo = {},
+                    onOpenSleepMode = {},
+                    onOpenEditTags = {}
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("apple_bottom_sheet_drag_handle").assertDoesNotExist()
+        composeRule.onNodeWithText("Hẹn giờ").assertIsDisplayed()
+        composeRule.onNodeWithText("Thông tin bài hát").assertIsDisplayed()
+        composeRule.onNodeWithText("Chế độ ngủ").assertIsDisplayed()
+        composeRule.onNodeWithText("Sửa tag bài hát").assertIsDisplayed()
+    }
+
+    @Test
+    fun `NowPlayingQueueSheet keeps drag handle and renders single line marquee title and artist`() {
+        val queue = listOf(
+            Track(
+                id = "q_1",
+                title = "Một Tiêu Đề Bài Hát Rất Dài Để Kiểm Tra Chế Độ Chạy Chữ Ngang Marquee Trên Một Dòng Duy Nhất",
+                artist = "Nghệ Sĩ Có Tên Rất Dài Để Kiểm Tra Cắt Ngắn Ellipsis",
+                album = "YouTube",
+                source = MusicSource.YOUTUBE_MUSIC,
+                durationMs = 240_000L,
+                format = AudioFormat.OPUS
+            ),
+            Track(
+                id = "q_2",
+                title = "Nàng Thơ",
+                artist = "Hoàng Dũng",
+                album = "25",
+                source = MusicSource.OFFLINE,
+                durationMs = 250_000L,
+                format = AudioFormat.MP3
+            )
+        )
+        composeRule.setContent {
+            MusicPlayerTheme(themeMode = ThemeMode.DARK) {
+                NowPlayingQueueSheet(
+                    queue = queue,
+                    currentIndex = 0,
+                    onDismiss = {},
+                    onSelectTrack = {}
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("apple_bottom_sheet_drag_handle").assertIsDisplayed()
+        composeRule.onNodeWithText("Hàng đợi phát").assertIsDisplayed()
+        composeRule.onNodeWithText("Hàng đợi phát (2 bài)").assertDoesNotExist()
+        composeRule.onNodeWithTag("queue_item_row_0").assertIsDisplayed()
+        composeRule.onNodeWithTag("queue_item_title_0").assertIsDisplayed()
+        composeRule.onNodeWithTag("queue_item_artist_0").assertIsDisplayed()
+        composeRule.onNodeWithTag("queue_item_row_1").assertIsDisplayed()
     }
 }

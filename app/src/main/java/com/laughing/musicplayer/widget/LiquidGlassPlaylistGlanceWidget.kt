@@ -184,7 +184,7 @@ private fun LiquidGlassPlaylistWidgetContent(
             Spacer(modifier = GlanceModifier.height(10.dp))
 
             Text(
-                text = "Danh sách phát tiếp theo (${snapshot.queue.size})",
+                text = "Danh sách phát tiếp theo",
                 style = TextStyle(
                     color = secondaryText,
                     fontSize = 12.sp,

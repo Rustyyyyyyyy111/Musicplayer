@@ -2,7 +2,6 @@ package com.laughing.musicplayer.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -38,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -76,39 +76,43 @@ fun AppleModalBottomSheet(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    dragHandle: (@Composable () -> Unit)? = { AppleBottomSheetDragHandle() },
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors = LocalMusicPlayerColors.current
-    val sheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    val sheetShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
-        modifier = Modifier
-            .border(1.dp, colors.modalBorder, sheetShape)
-            .then(modifier),
+        modifier = modifier,
         sheetState = sheetState,
         shape = sheetShape,
-        containerColor = colors.modalSurface,
+        containerColor = colors.modalSurface.copy(alpha = 1f),
         contentColor = colors.textPrimary,
         tonalElevation = 0.dp,
         scrimColor = colors.modalScrim,
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(vertical = 12.dp)
-                    .size(width = 36.dp, height = 4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(
-                        if (colors.isDark) Color.White.copy(alpha = 0.28f)
-                        else Color.Black.copy(alpha = 0.22f)
-                    )
-            )
-        }
+        dragHandle = dragHandle
     ) {
         ProvideModalColorScheme {
             content()
         }
     }
+}
+
+@Composable
+private fun AppleBottomSheetDragHandle() {
+    val colors = LocalMusicPlayerColors.current
+    Box(
+        modifier = Modifier
+            .padding(vertical = 12.dp)
+            .size(width = 36.dp, height = 4.dp)
+            .clip(RoundedCornerShape(2.dp))
+            .background(
+                if (colors.isDark) Color.White.copy(alpha = 0.28f)
+                else Color.Black.copy(alpha = 0.22f)
+            )
+            .testTag("apple_bottom_sheet_drag_handle")
+    )
 }
 
 @Composable

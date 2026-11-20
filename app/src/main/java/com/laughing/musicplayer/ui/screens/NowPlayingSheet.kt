@@ -17,6 +17,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -597,45 +598,15 @@ fun NowPlayingSheet(
     }
 
     if (showQueueSheet) {
-        AppleModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
-            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                Text(
-                    "Hàng đợi phát (${playback.queue.size} bài)",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = colors.textPrimary
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                LazyColumn(modifier = Modifier.height(340.dp)) {
-                    itemsIndexed(playback.queue) { idx, item ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    viewModel.playTrack(item, playback.queue)
-                                    showQueueSheet = false
-                                }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            ArtworkImage(item.artworkUri, item.title, Modifier.size(42.dp), 10.dp)
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    item.title,
-                                    fontWeight = if (idx == playback.currentIndex) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (idx == playback.currentIndex) colors.accent else colors.textPrimary
-                                )
-                                Text(
-                                    item.artist,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = colors.textSecondary
-                                )
-                            }
-                        }
-                    }
-                }
+        NowPlayingQueueSheet(
+            queue = playback.queue,
+            currentIndex = playback.currentIndex,
+            onDismiss = { showQueueSheet = false },
+            onSelectTrack = { item ->
+                viewModel.playTrack(item, playback.queue)
+                showQueueSheet = false
             }
-        }
+        )
     }
 
     if (showMoreSheet) {
@@ -1149,6 +1120,69 @@ fun NowPlayingDownloadActionButton(
                     contentDescription = "Tải về",
                     tint = Color.White
                 )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NowPlayingQueueSheet(
+    queue: List<Track>,
+    currentIndex: Int,
+    onDismiss: () -> Unit,
+    onSelectTrack: (Track) -> Unit
+) {
+    val colors = LocalMusicPlayerColors.current
+    AppleModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(16.dp)
+        ) {
+            Text(
+                "Hàng đợi phát",
+                style = MaterialTheme.typography.titleLarge,
+                color = colors.textPrimary
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            LazyColumn(modifier = Modifier.height(340.dp)) {
+                itemsIndexed(queue) { idx, item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clickable { onSelectTrack(item) }
+                            .padding(vertical = 8.dp)
+                            .testTag("queue_item_row_$idx"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ArtworkImage(item.artworkUri, item.title, Modifier.size(42.dp), 10.dp)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.title,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .basicMarquee()
+                                    .testTag("queue_item_title_$idx"),
+                                fontWeight = if (idx == currentIndex) FontWeight.Bold else FontWeight.Normal,
+                                color = if (idx == currentIndex) colors.accent else colors.textPrimary
+                            )
+                            Text(
+                                text = item.artist,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.textSecondary,
+                                modifier = Modifier.testTag("queue_item_artist_$idx")
+                            )
+                        }
+                    }
+                }
             }
         }
     }

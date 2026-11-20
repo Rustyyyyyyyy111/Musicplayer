@@ -598,13 +598,10 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
             if (related.isNotEmpty()) {
                 withContext(Dispatchers.Main) {
                     if (!youtubeRadioActive) return@withContext
-                    val added = container.playerController.appendTracksToQueue(
+                    container.playerController.appendTracksToQueue(
                         tracks = related,
                         expectedCurrentTrackId = track.id
                     )
-                    if (added > 0) {
-                        postToast("Up Next Radio: đã thêm $added bài gợi ý")
-                    }
                 }
             }
         }

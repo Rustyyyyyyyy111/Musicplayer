@@ -100,13 +100,14 @@ fun NowPlayingMoreSheet(
     val isEditableOffline = track.source == MusicSource.OFFLINE || !track.localPath.isNullOrBlank()
 
     AppleModalBottomSheet(
-        onDismissRequest = onDismiss
+        onDismissRequest = onDismiss,
+        dragHandle = null
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
+                .padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Track summary header
@@ -114,6 +115,8 @@ fun NowPlayingMoreSheet(
                 shape = RoundedCornerShape(18.dp),
                 color = colors.modalCardSurface,
                 border = BorderStroke(1.dp, colors.modalBorder),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -154,6 +157,8 @@ fun NowPlayingMoreSheet(
                 shape = RoundedCornerShape(18.dp),
                 color = colors.modalCardSurface,
                 border = BorderStroke(1.dp, colors.modalBorder),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
