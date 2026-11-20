@@ -38,6 +38,7 @@ import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.laughing.musicplayer.data.local.UserPreferences
 import com.laughing.musicplayer.data.storage.AudioTagEditRequest
 import com.laughing.musicplayer.data.storage.AudioTagEditResult
+import com.laughing.musicplayer.data.storage.OfflineScanMode
 import com.laughing.musicplayer.data.storage.TrackMetadataInspector
 import com.laughing.musicplayer.data.storage.TrackTechnicalInfo
 import com.laughing.musicplayer.data.telegram.TelegramAuthUiState
@@ -125,6 +126,15 @@ data class LyricsUiState(
     val showRomanization: Boolean = true,
     val showTranslation: Boolean = false,
     val searchResults: List<LyricsResult> = emptyList()
+)
+
+data class OfflineScanUiState(
+    val isScanning: Boolean = false,
+    val mode: OfflineScanMode? = null,
+    val scannedCount: Int = 0,
+    val currentTitle: String = "",
+    val lastScannedCount: Int? = null,
+    val lastSummaryMessage: String? = null
 )
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -238,6 +248,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val _isScanningTelegram = MutableStateFlow(false)
     val isScanningTelegram: StateFlow<Boolean> = _isScanningTelegram.asStateFlow()
+
+    private val _offlineScanState = MutableStateFlow(OfflineScanUiState())
+    val offlineScanState: StateFlow<OfflineScanUiState> = _offlineScanState.asStateFlow()
 
     private val _isIndexingOffline = MutableStateFlow(false)
     val isIndexingOffline: StateFlow<Boolean> = _isIndexingOffline.asStateFlow()
@@ -819,13 +832,70 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun buildAllFilesAccessIntent(): Intent = container.storageManager.buildManageAllFilesAccessIntent()
     fun getUnifiedDownloadDisplayPath(): String = container.storageManager.getDisplayRootPath()
 
-    // Offline Indexing
-    fun indexOfflineLibrary() {
+    // Offline / Local Music Scanner
+    fun indexOfflineLibrary() = scanEntireDevice()
+
+    fun scanEntireDevice() {
+        if (_offlineScanState.value.isScanning) return
         viewModelScope.launch {
             _isIndexingOffline.value = true
-            val count = container.offlineMusicRepository.indexLocalLibrary()
+            _offlineScanState.value = _offlineScanState.value.copy(
+                isScanning = true,
+                mode = OfflineScanMode.ENTIRE_DEVICE,
+                scannedCount = 0,
+                currentTitle = ""
+            )
+            val count = runCatching {
+                container.offlineMusicRepository.scanEntireDevice { progress ->
+                    _offlineScanState.value = _offlineScanState.value.copy(
+                        scannedCount = progress.scannedCount,
+                        currentTitle = progress.currentTitle
+                    )
+                }
+            }.getOrElse { 0 }
+            val summary = "Đã quét xong: tìm thấy $count bài hát"
+            _offlineScanState.value = OfflineScanUiState(
+                isScanning = false,
+                mode = OfflineScanMode.ENTIRE_DEVICE,
+                scannedCount = count,
+                currentTitle = "",
+                lastScannedCount = count,
+                lastSummaryMessage = summary
+            )
             _isIndexingOffline.value = false
-            postToast("Đã quét $count bài hát Offline")
+            postToast(summary)
+        }
+    }
+
+    fun scanSelectedFolder(treeUri: Uri) {
+        if (_offlineScanState.value.isScanning) return
+        viewModelScope.launch {
+            _isIndexingOffline.value = true
+            _offlineScanState.value = _offlineScanState.value.copy(
+                isScanning = true,
+                mode = OfflineScanMode.SELECTED_FOLDER,
+                scannedCount = 0,
+                currentTitle = ""
+            )
+            val count = runCatching {
+                container.offlineMusicRepository.scanSelectedFolder(treeUri) { progress ->
+                    _offlineScanState.value = _offlineScanState.value.copy(
+                        scannedCount = progress.scannedCount,
+                        currentTitle = progress.currentTitle
+                    )
+                }
+            }.getOrElse { 0 }
+            val summary = "Đã quét xong: tìm thấy $count bài hát"
+            _offlineScanState.value = OfflineScanUiState(
+                isScanning = false,
+                mode = OfflineScanMode.SELECTED_FOLDER,
+                scannedCount = count,
+                currentTitle = "",
+                lastScannedCount = count,
+                lastSummaryMessage = summary
+            )
+            _isIndexingOffline.value = false
+            postToast(summary)
         }
     }
 

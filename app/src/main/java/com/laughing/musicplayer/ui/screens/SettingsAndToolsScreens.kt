@@ -100,6 +100,7 @@ import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.data.telegram.TelegramAuthUiState
 import com.laughing.musicplayer.ui.components.AppleCard
 import com.laughing.musicplayer.ui.components.ArtworkImage
+import com.laughing.musicplayer.ui.components.rememberLocalMusicScannerLauncher
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 import java.text.SimpleDateFormat
@@ -128,6 +129,8 @@ fun SettingsScreen(
     val isScanningTg by viewModel.isScanningTelegram.collectAsStateWithLifecycle()
     val isYouTubeLoggedIn by viewModel.isYouTubeLoggedIn.collectAsStateWithLifecycle()
     val proxyTestResult by viewModel.proxyTestResult.collectAsStateWithLifecycle()
+    val offlineScanState by viewModel.offlineScanState.collectAsStateWithLifecycle()
+    val openScannerSheet = rememberLocalMusicScannerLauncher(viewModel)
 
     var showCacheLimitDialog by remember { mutableStateOf(false) }
     var showProxyDialog by remember { mutableStateOf(false) }
@@ -306,6 +309,31 @@ fun SettingsScreen(
                         onClick = onOpenYouTubeSearch,
                         testTag = "setting_yt_music"
                     )
+                    SettingsDivider()
+                    SettingsNavRow(
+                        icon = Icons.Filled.FolderOpen,
+                        title = "Quét nhạc trong máy",
+                        subtitle = when {
+                            offlineScanState.isScanning -> {
+                                val current = offlineScanState.currentTitle.takeIf { it.isNotBlank() }?.let { " • $it" }.orEmpty()
+                                "Đang quét (${offlineScanState.scannedCount} bài hát)$current"
+                            }
+                            !offlineScanState.lastSummaryMessage.isNullOrBlank() -> offlineScanState.lastSummaryMessage!!
+                            else -> "Quét toàn bộ thiết bị hoặc chọn thư mục (.m4a, .aac, .mp3, .flac, .opus, .wav, .ogg)"
+                        },
+                        onClick = { if (!offlineScanState.isScanning) openScannerSheet() },
+                        testTag = "setting_scan_local_music"
+                    )
+                    if (offlineScanState.isScanning) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .height(3.dp),
+                            color = colors.accent,
+                            trackColor = colors.divider
+                        )
+                    }
                     SettingsDivider()
                     SettingsToggleRow(
                         title = "Đồng bộ tự động",

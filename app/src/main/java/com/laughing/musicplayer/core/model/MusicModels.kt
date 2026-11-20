@@ -300,14 +300,16 @@ data class AudioQualitySpecDisplay(
 )
 
 fun Track.toAudioQualityDisplay(): AudioQualitySpecDisplay {
-    val isLossless = format.isLossless
+    val codecUpper = audioCodec.orEmpty().uppercase(java.util.Locale.US)
+    val isAlacInM4a = format == AudioFormat.M4A && codecUpper.contains("ALAC")
+    val isLossless = format.isLossless || isAlacInM4a
     val badge = when {
         format == AudioFormat.FLAC -> "FLAC"
-        format == AudioFormat.ALAC -> "ALAC"
+        format == AudioFormat.ALAC || isAlacInM4a -> "ALAC"
         format == AudioFormat.WAV -> "WAV"
         format == AudioFormat.APE -> "APE"
         format == AudioFormat.OPUS -> "OPUS"
-        format == AudioFormat.M4A -> "M4A"
+        format == AudioFormat.M4A -> "M4A / AAC"
         format == AudioFormat.MP3 -> "MP3"
         format == AudioFormat.AAC -> "AAC"
         format == AudioFormat.OGG -> "OGG"

@@ -203,7 +203,7 @@ fun AudioQualityBadge(
     modifier: Modifier = Modifier
 ) {
     val colors = LocalMusicPlayerColors.current
-    val quality = remember(track.format, track.bitrateKbps, track.sampleRateHz, track.bitDepth) {
+    val quality = remember(track.format, track.audioCodec, track.bitrateKbps, track.sampleRateHz, track.bitDepth) {
         track.toAudioQualityDisplay()
     }
     val containerColor = when {
@@ -561,7 +561,7 @@ fun TrackRowItem(
     val colors = LocalMusicPlayerColors.current
     var menuExpanded by remember { mutableStateOf(false) }
 
-    val quality = remember(track.format, track.bitrateKbps, track.sampleRateHz, track.bitDepth) {
+    val quality = remember(track.format, track.audioCodec, track.bitrateKbps, track.sampleRateHz, track.bitDepth) {
         track.toAudioQualityDisplay()
     }
     val metadataLine = remember(track.artist, track.telegramTopicName, quality) {

@@ -103,7 +103,7 @@ class ExampleRobolectricTest {
 
         composeRule.onNodeWithTag("source_tab_offline").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("Quét nhạc Offline ngay").assertIsDisplayed()
+        composeRule.onNodeWithText("Quét nhạc trong máy").assertIsDisplayed()
     }
 
     @Test

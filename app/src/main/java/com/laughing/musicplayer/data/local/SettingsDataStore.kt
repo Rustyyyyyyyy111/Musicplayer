@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.laughing.musicplayer.core.model.CrossfadeOption
 import com.laughing.musicplayer.core.model.EqPreset
@@ -44,7 +45,8 @@ data class UserPreferences(
     val isYouTubeLoggedIn: Boolean = false,
     val floodWaitUntilEpochMs: Long = 0L,
     val lastTelegramAutoSyncEpochMs: Long = 0L,
-    val sleepFadeOutEnabled: Boolean = true
+    val sleepFadeOutEnabled: Boolean = true,
+    val scannedFolderUris: Set<String> = emptySet()
 )
 
 class SettingsDataStore(
@@ -81,6 +83,7 @@ class SettingsDataStore(
         val TG_FLOOD_WAIT_UNTIL_MS = longPreferencesKey("tg_flood_wait_until_ms")
         val TG_LAST_AUTO_SYNC_MS = longPreferencesKey("tg_last_auto_sync_ms")
         val SLEEP_FADEOUT_ENABLED = booleanPreferencesKey("sleep_fadeout_enabled")
+        val SCANNED_FOLDER_URIS = stringSetPreferencesKey("scanned_folder_uris")
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.musicPrefsDataStore.data.map { prefs ->
@@ -131,7 +134,8 @@ class SettingsDataStore(
             isYouTubeLoggedIn = prefs[Keys.YT_LOGGED_IN] ?: false,
             floodWaitUntilEpochMs = prefs[Keys.TG_FLOOD_WAIT_UNTIL_MS] ?: 0L,
             lastTelegramAutoSyncEpochMs = prefs[Keys.TG_LAST_AUTO_SYNC_MS] ?: 0L,
-            sleepFadeOutEnabled = prefs[Keys.SLEEP_FADEOUT_ENABLED] ?: true
+            sleepFadeOutEnabled = prefs[Keys.SLEEP_FADEOUT_ENABLED] ?: true,
+            scannedFolderUris = prefs[Keys.SCANNED_FOLDER_URIS] ?: emptySet()
         )
     }
 
@@ -231,5 +235,19 @@ class SettingsDataStore(
 
     suspend fun setSleepFadeOutEnabled(enabled: Boolean) {
         context.musicPrefsDataStore.edit { it[Keys.SLEEP_FADEOUT_ENABLED] = enabled }
+    }
+
+    suspend fun addScannedFolderUri(uri: String) {
+        context.musicPrefsDataStore.edit { prefs ->
+            val current = prefs[Keys.SCANNED_FOLDER_URIS] ?: emptySet()
+            prefs[Keys.SCANNED_FOLDER_URIS] = current + uri
+        }
+    }
+
+    suspend fun removeScannedFolderUri(uri: String) {
+        context.musicPrefsDataStore.edit { prefs ->
+            val current = prefs[Keys.SCANNED_FOLDER_URIS] ?: emptySet()
+            prefs[Keys.SCANNED_FOLDER_URIS] = current - uri
+        }
     }
 }

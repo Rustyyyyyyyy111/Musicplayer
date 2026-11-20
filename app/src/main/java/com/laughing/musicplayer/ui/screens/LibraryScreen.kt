@@ -1,8 +1,6 @@
 package com.laughing.musicplayer.ui.screens
 
-import android.Manifest
 import android.content.Intent
-import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -94,7 +92,9 @@ import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
 import com.laughing.musicplayer.ui.components.AppleCard
 import com.laughing.musicplayer.ui.components.AppleMusicSegmentedSwitcher
 import com.laughing.musicplayer.ui.components.ArtworkImage
+import com.laughing.musicplayer.ui.components.OfflineScanProgressBanner
 import com.laughing.musicplayer.ui.components.TrackRowItem
+import com.laughing.musicplayer.ui.components.rememberLocalMusicScannerLauncher
 import com.laughing.musicplayer.ui.theme.LocalMusicPlayerColors
 import com.laughing.musicplayer.ui.viewmodel.MusicPlayerViewModel
 
@@ -132,7 +132,8 @@ fun LibraryScreen(
     val hasAllFilesAccess by viewModel.hasAllFilesAccess.collectAsStateWithLifecycle()
     val duplicates by viewModel.duplicateGroups.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
-    val isIndexingOffline by viewModel.isIndexingOffline.collectAsStateWithLifecycle()
+    val offlineScanState by viewModel.offlineScanState.collectAsStateWithLifecycle()
+    val openScannerSheet = rememberLocalMusicScannerLauncher(viewModel)
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -168,28 +169,6 @@ fun LibraryScreen(
     BackHandler(enabled = isLocalSearchVisible) {
         localSearchValue = TextFieldValue("")
         isLocalSearchVisible = false
-    }
-
-    val storagePermissions = remember {
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(Manifest.permission.READ_MEDIA_AUDIO)
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-        }
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        if (results.values.any { it } || viewModel.hasAudioReadPermission()) {
-            viewModel.indexOfflineLibrary()
-        }
-    }
-    fun triggerOfflineScanWithPermissions() {
-        if (viewModel.hasAudioReadPermission()) {
-            viewModel.indexOfflineLibrary()
-        } else {
-            permissionLauncher.launch(storagePermissions)
-        }
     }
 
     val m3uImportLauncher = rememberLauncherForActivityResult(
@@ -314,14 +293,15 @@ fun LibraryScreen(
                         }
                         MusicSource.OFFLINE -> {
                             Button(
-                                onClick = { triggerOfflineScanWithPermissions() },
-                                enabled = !isIndexingOffline,
+                                onClick = openScannerSheet,
+                                enabled = !offlineScanState.isScanning,
                                 colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-                                shape = RoundedCornerShape(16.dp)
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.testTag("offline_header_scan_btn")
                             ) {
                                 Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (isIndexingOffline) "Đang quét" else "Quét nhạc")
+                                Text(if (offlineScanState.isScanning) "Đang quét" else "Quét nhạc")
                             }
                         }
                     }
@@ -404,6 +384,10 @@ fun LibraryScreen(
                         )
                     }
                 }
+            }
+
+            if (selectedSource == MusicSource.OFFLINE && offlineScanState.isScanning) {
+                OfflineScanProgressBanner(scanState = offlineScanState)
             }
         }
 
@@ -603,7 +587,7 @@ fun LibraryScreen(
                                     onGrantAllFilesAccess = {
                                         runCatching { context.startActivity(viewModel.buildAllFilesAccessIntent()) }
                                     },
-                                    onScanOffline = { triggerOfflineScanWithPermissions() }
+                                    onScanOffline = openScannerSheet
                                 )
                             }
                         } else {
@@ -1088,12 +1072,13 @@ private fun EmptySourceCard(
                         MusicSource.TELEGRAM -> ({})
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
-                    shape = RoundedCornerShape(16.dp)
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = if (source == MusicSource.OFFLINE) Modifier.testTag("offline_empty_scan_btn") else Modifier
                 ) {
                     Text(
                         when (source) {
                             MusicSource.YOUTUBE_MUSIC -> "Tìm trên YouTube Music"
-                            MusicSource.OFFLINE -> "Quét nhạc Offline ngay"
+                            MusicSource.OFFLINE -> "Quét nhạc trong máy"
                             MusicSource.TELEGRAM -> ""
                         }
                     )

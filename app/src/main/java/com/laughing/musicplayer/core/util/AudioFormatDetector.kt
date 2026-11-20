@@ -1,9 +1,11 @@
 package com.laughing.musicplayer.core.util
 
+import android.content.Context
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Build
 import com.laughing.musicplayer.core.model.AudioFormat
 import java.io.File
@@ -21,7 +23,8 @@ data class AudioSpecProbeResult(
     val genreName: String? = null,
     val channelCount: Int = 2,
     val audioCodec: String? = null,
-    val embeddedArtwork: ByteArray? = null
+    val embeddedArtwork: ByteArray? = null,
+    val detectedFormat: AudioFormat? = null
 )
 
 object AudioFormatDetector {
@@ -164,127 +167,265 @@ object AudioFormatDetector {
         if (!file.exists() || !file.canRead() || file.length() <= 0L) {
             return AudioSpecProbeResult(
                 sampleRateHz = defaultSampleRateFor(format),
-                bitDepth = if (format.isLossless) 16 else null
+                bitDepth = if (format.isLossless) 16 else null,
+                audioCodec = defaultCodecLabelFor(format),
+                detectedFormat = format
             )
         }
 
-        var sampleRate = 0
-        var bitDepth: Int? = null
-        var bitrateKbps = 0
-        var durationMs = 0L
-        var title: String? = null
-        var artist: String? = null
-        var album: String? = null
-        var albumArtist: String? = null
-        var releaseYear: Int? = null
-        var genreName: String? = null
-        var channelCount = 2
-        var audioCodec: String? = null
-        var artwork: ByteArray? = null
-
-        // 1. Parse FLAC STREAMINFO directly if FLAC (gives exact sample rate, bit depth, channels)
-        if (format == AudioFormat.FLAC) {
-            runCatching {
-                val buf = ByteArray(42)
-                val read = file.inputStream().use { it.read(buf) }
-                if (read >= 26 &&
-                    buf[0] == 0x66.toByte() && buf[1] == 0x4C.toByte() &&
-                    buf[2] == 0x61.toByte() && buf[3] == 0x43.toByte() &&
-                    (buf[4].toInt() and 0x7F) == 0
-                ) {
-                    val b18 = buf[18].toInt() and 0xFF
-                    val b19 = buf[19].toInt() and 0xFF
-                    val b20 = buf[20].toInt() and 0xFF
-                    val b21 = buf[21].toInt() and 0xFF
-                    val sr = (b18 shl 12) or (b19 shl 4) or (b20 ushr 4)
-                    val channels = ((b20 ushr 1) and 0x07) + 1
-                    val bps = (((b20 and 0x01) shl 4) or (b21 ushr 4)) + 1
-                    if (sr in 8000..384000) sampleRate = sr
-                    if (channels in 1..8) channelCount = channels
-                    if (bps in 8..32) bitDepth = bps
-                    audioCodec = "FLAC (Lossless)"
-                }
-            }
-        }
-
-        // 2. Inspect MediaMetadataRetriever for duration, bitrate, tags, and embedded album art
+        val flacHeader = if (format == AudioFormat.FLAC) parseFlacStreamInfo(file) else null
         val retriever = MediaMetadataRetriever()
-        runCatching {
-            retriever.setDataSource(file.absolutePath)
-            title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }
-            artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() }
-            album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)?.takeIf { it.isNotBlank() }
-            albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)?.takeIf { it.isNotBlank() }
-            genreName = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)?.takeIf { it.isNotBlank() }
-            val yearRaw = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
-                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
-            releaseYear = yearRaw?.trim()?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
-            durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            bitrateKbps = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull() ?: 0) / 1000
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && sampleRate == 0) {
-                sampleRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull() ?: 0
-                val bits = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)?.toIntOrNull()
-                if (bits != null && bits in 8..32 && bitDepth == null) bitDepth = bits
-            }
-            artwork = retriever.embeddedPicture
+        val retrieverResult = try {
+            runCatching {
+                retriever.setDataSource(file.absolutePath)
+                extractFromRetriever(retriever)
+            }.getOrNull()
+        } finally {
+            runCatching { retriever.release() }
         }
-        runCatching { retriever.release() }
 
-        // 3. Fallback MediaExtractor for sample rate, channels, codec MIME, and pcm bit depth
         val extractor = MediaExtractor()
-        runCatching {
-            extractor.setDataSource(file.absolutePath)
-            for (i in 0 until extractor.trackCount) {
-                val mf = extractor.getTrackFormat(i)
-                val mime = mf.getString(MediaFormat.KEY_MIME).orEmpty()
-                if (mime.startsWith("audio/")) {
-                    if (sampleRate == 0 && mf.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                        sampleRate = mf.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    }
-                    if (mf.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                        channelCount = mf.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceIn(1, 16)
-                    }
-                    if (audioCodec == null) {
-                        audioCodec = mapMimeToCodecLabel(mime, format)
-                    }
-                    if (bitrateKbps == 0 && mf.containsKey(MediaFormat.KEY_BIT_RATE)) {
-                        bitrateKbps = mf.getInteger(MediaFormat.KEY_BIT_RATE) / 1000
-                    }
-                    if (bitDepth == null && mf.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
-                        bitDepth = when (mf.getInteger(MediaFormat.KEY_PCM_ENCODING)) {
-                            AndroidAudioFormat.ENCODING_PCM_8BIT -> 8
-                            AndroidAudioFormat.ENCODING_PCM_16BIT -> 16
-                            AndroidAudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
-                            AndroidAudioFormat.ENCODING_PCM_32BIT,
-                            AndroidAudioFormat.ENCODING_PCM_FLOAT -> 32
-                            else -> null
-                        }
-                    }
-                    break
+        val extractorResult = try {
+            runCatching {
+                extractor.setDataSource(file.absolutePath)
+                extractFromExtractor(extractor, format)
+            }.getOrNull()
+        } finally {
+            runCatching { extractor.release() }
+        }
+
+        return mergeProbeResults(
+            format = format,
+            knownFileSizeBytes = file.length(),
+            flacHeader = flacHeader,
+            retriever = retrieverResult,
+            extractor = extractorResult
+        )
+    }
+
+    fun probeAudioSpecsFromUri(
+        context: Context,
+        uri: Uri,
+        format: AudioFormat,
+        knownFileSizeBytes: Long = 0L
+    ): AudioSpecProbeResult {
+        val flacHeader = if (format == AudioFormat.FLAC) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val buf = ByteArray(42)
+                    val read = stream.read(buf)
+                    if (read >= 26) parseFlacHeaderBytes(buf, read) else null
                 }
-            }
-        }
-        runCatching { extractor.release() }
+            }.getOrNull()
+        } else null
 
-        // 4. Estimate bitrate from file size & duration when container omits it
-        if (bitrateKbps <= 0 && durationMs > 1000L && file.length() > 0L) {
-            bitrateKbps = ((file.length() * 8L) / durationMs).toInt().coerceIn(32, 9216)
+        val retriever = MediaMetadataRetriever()
+        val retrieverResult = try {
+            runCatching {
+                retriever.setDataSource(context, uri)
+                extractFromRetriever(retriever)
+            }.getOrNull()
+        } finally {
+            runCatching { retriever.release() }
         }
 
-        return AudioSpecProbeResult(
-            sampleRateHz = if (sampleRate > 0) sampleRate else defaultSampleRateFor(format),
-            bitDepth = bitDepth ?: if (format.isLossless) 16 else null,
-            bitrateKbps = bitrateKbps,
-            durationMs = durationMs,
+        val extractor = MediaExtractor()
+        val extractorResult = try {
+            runCatching {
+                extractor.setDataSource(context, uri, null)
+                extractFromExtractor(extractor, format)
+            }.getOrNull()
+        } finally {
+            runCatching { extractor.release() }
+        }
+
+        return mergeProbeResults(
+            format = format,
+            knownFileSizeBytes = knownFileSizeBytes,
+            flacHeader = flacHeader,
+            retriever = retrieverResult,
+            extractor = extractorResult
+        )
+    }
+
+    private data class FlacStreamInfo(
+        val sampleRateHz: Int,
+        val channelCount: Int,
+        val bitDepth: Int
+    )
+
+    private data class RetrieverProbe(
+        val title: String? = null,
+        val artist: String? = null,
+        val album: String? = null,
+        val albumArtist: String? = null,
+        val genreName: String? = null,
+        val releaseYear: Int? = null,
+        val durationMs: Long = 0L,
+        val bitrateKbps: Int = 0,
+        val sampleRateHz: Int = 0,
+        val bitDepth: Int? = null,
+        val embeddedArtwork: ByteArray? = null
+    )
+
+    private data class ExtractorProbe(
+        val sampleRateHz: Int = 0,
+        val channelCount: Int = 2,
+        val audioCodec: String? = null,
+        val bitrateKbps: Int = 0,
+        val bitDepth: Int? = null,
+        val detectedFormat: AudioFormat? = null
+    )
+
+    private fun parseFlacStreamInfo(file: File): FlacStreamInfo? = runCatching {
+        val buf = ByteArray(42)
+        val read = file.inputStream().use { it.read(buf) }
+        parseFlacHeaderBytes(buf, read)
+    }.getOrNull()
+
+    private fun parseFlacHeaderBytes(buf: ByteArray, read: Int): FlacStreamInfo? {
+        if (read < 26) return null
+        if (buf[0] != 0x66.toByte() || buf[1] != 0x4C.toByte() ||
+            buf[2] != 0x61.toByte() || buf[3] != 0x43.toByte() ||
+            (buf[4].toInt() and 0x7F) != 0
+        ) {
+            return null
+        }
+        val b18 = buf[18].toInt() and 0xFF
+        val b19 = buf[19].toInt() and 0xFF
+        val b20 = buf[20].toInt() and 0xFF
+        val b21 = buf[21].toInt() and 0xFF
+        val sr = (b18 shl 12) or (b19 shl 4) or (b20 ushr 4)
+        val channels = ((b20 ushr 1) and 0x07) + 1
+        val bps = (((b20 and 0x01) shl 4) or (b21 ushr 4)) + 1
+        return if (sr in 8000..384000) {
+            FlacStreamInfo(
+                sampleRateHz = sr,
+                channelCount = channels.coerceIn(1, 8),
+                bitDepth = bps.coerceIn(8, 32)
+            )
+        } else null
+    }
+
+    private fun extractFromRetriever(retriever: MediaMetadataRetriever): RetrieverProbe {
+        val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }
+        val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() }
+        val album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)?.takeIf { it.isNotBlank() }
+        val albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)?.takeIf { it.isNotBlank() }
+        val genreName = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)?.takeIf { it.isNotBlank() }
+        val yearRaw = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
+            ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
+        val releaseYear = yearRaw?.trim()?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        val bitrateKbps = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull() ?: 0) / 1000
+        var sampleRateHz = 0
+        var bitDepth: Int? = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            sampleRateHz = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull() ?: 0
+            val bits = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)?.toIntOrNull()
+            if (bits != null && bits in 8..32) bitDepth = bits
+        }
+        val artwork = runCatching { retriever.embeddedPicture }.getOrNull()
+        return RetrieverProbe(
             title = title,
             artist = artist,
             album = album,
             albumArtist = albumArtist,
-            releaseYear = releaseYear,
             genreName = genreName,
-            channelCount = channelCount,
-            audioCodec = audioCodec ?: defaultCodecLabelFor(format),
+            releaseYear = releaseYear,
+            durationMs = durationMs,
+            bitrateKbps = bitrateKbps,
+            sampleRateHz = sampleRateHz,
+            bitDepth = bitDepth,
             embeddedArtwork = artwork
+        )
+    }
+
+    private fun extractFromExtractor(extractor: MediaExtractor, format: AudioFormat): ExtractorProbe? {
+        for (i in 0 until extractor.trackCount) {
+            val mf = extractor.getTrackFormat(i)
+            val mime = mf.getString(MediaFormat.KEY_MIME).orEmpty()
+            if (mime.startsWith("audio/")) {
+                val sr = if (mf.containsKey(MediaFormat.KEY_SAMPLE_RATE)) mf.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 0
+                val ch = if (mf.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                    mf.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceIn(1, 16)
+                } else 2
+                val br = if (mf.containsKey(MediaFormat.KEY_BIT_RATE)) mf.getInteger(MediaFormat.KEY_BIT_RATE) / 1000 else 0
+                val depth = if (mf.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                    when (mf.getInteger(MediaFormat.KEY_PCM_ENCODING)) {
+                        AndroidAudioFormat.ENCODING_PCM_8BIT -> 8
+                        AndroidAudioFormat.ENCODING_PCM_16BIT -> 16
+                        AndroidAudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
+                        AndroidAudioFormat.ENCODING_PCM_32BIT,
+                        AndroidAudioFormat.ENCODING_PCM_FLOAT -> 32
+                        else -> null
+                    }
+                } else null
+                val refinedFormat = if (format == AudioFormat.M4A && mime.lowercase().contains("alac")) {
+                    AudioFormat.ALAC
+                } else {
+                    format
+                }
+                return ExtractorProbe(
+                    sampleRateHz = sr,
+                    channelCount = ch,
+                    audioCodec = mapMimeToCodecLabel(mime, refinedFormat),
+                    bitrateKbps = br,
+                    bitDepth = depth,
+                    detectedFormat = refinedFormat
+                )
+            }
+        }
+        return null
+    }
+
+    private fun mergeProbeResults(
+        format: AudioFormat,
+        knownFileSizeBytes: Long,
+        flacHeader: FlacStreamInfo?,
+        retriever: RetrieverProbe?,
+        extractor: ExtractorProbe?
+    ): AudioSpecProbeResult {
+        val effectiveFormat = extractor?.detectedFormat ?: format
+        var sampleRate = flacHeader?.sampleRateHz?.takeIf { it > 0 }
+            ?: retriever?.sampleRateHz?.takeIf { it > 0 }
+            ?: extractor?.sampleRateHz?.takeIf { it > 0 }
+            ?: 0
+        val bitDepth = flacHeader?.bitDepth
+            ?: retriever?.bitDepth
+            ?: extractor?.bitDepth
+        val durationMs = retriever?.durationMs ?: 0L
+        var bitrateKbps = retriever?.bitrateKbps?.takeIf { it > 0 }
+            ?: extractor?.bitrateKbps?.takeIf { it > 0 }
+            ?: 0
+
+        if (bitrateKbps <= 0 && durationMs > 1000L && knownFileSizeBytes > 0L) {
+            bitrateKbps = ((knownFileSizeBytes * 8L) / durationMs).toInt().coerceIn(32, 9216)
+        }
+        if (sampleRate <= 0) {
+            sampleRate = defaultSampleRateFor(effectiveFormat)
+        }
+        val codec = when {
+            flacHeader != null -> "FLAC (Lossless)"
+            extractor?.audioCodec != null -> extractor.audioCodec
+            else -> defaultCodecLabelFor(effectiveFormat)
+        }
+
+        return AudioSpecProbeResult(
+            sampleRateHz = sampleRate,
+            bitDepth = bitDepth ?: if (effectiveFormat.isLossless) 16 else null,
+            bitrateKbps = bitrateKbps,
+            durationMs = durationMs,
+            title = retriever?.title,
+            artist = retriever?.artist,
+            album = retriever?.album,
+            albumArtist = retriever?.albumArtist,
+            releaseYear = retriever?.releaseYear,
+            genreName = retriever?.genreName,
+            channelCount = flacHeader?.channelCount ?: extractor?.channelCount ?: 2,
+            audioCodec = codec,
+            embeddedArtwork = retriever?.embeddedArtwork,
+            detectedFormat = effectiveFormat
         )
     }
 
@@ -293,7 +434,8 @@ object AudioFormatDetector {
         return when {
             m.contains("flac") -> "FLAC (Lossless)"
             m.contains("alac") -> "ALAC (Apple Lossless)"
-            m.contains("mp4a-latm") || m.contains("aac") -> "AAC (MP4A)"
+            (m.contains("mp4a-latm") || m.contains("aac")) && format == AudioFormat.M4A -> "M4A / AAC"
+            m.contains("mp4a-latm") || m.contains("aac") -> "AAC"
             m.contains("mpeg") -> "MPEG Audio Layer III (MP3)"
             m.contains("opus") -> "Opus"
             m.contains("vorbis") -> "Ogg Vorbis"
@@ -308,7 +450,7 @@ object AudioFormatDetector {
         AudioFormat.ALAC -> "ALAC (Apple Lossless)"
         AudioFormat.WAV -> "PCM (WAV)"
         AudioFormat.MP3 -> "MPEG Audio Layer III (MP3)"
-        AudioFormat.M4A -> "AAC / M4A"
+        AudioFormat.M4A -> "M4A / AAC"
         AudioFormat.AAC -> "AAC (ADTS)"
         AudioFormat.OGG -> "Ogg Vorbis"
         AudioFormat.OPUS -> "Opus"

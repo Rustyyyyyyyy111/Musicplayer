@@ -373,7 +373,13 @@ class UnifiedStorageManager(
 
     suspend fun saveArtworkFile(trackId: String, bytes: ByteArray): String? = withContext(Dispatchers.IO) {
         val dir = getAppManagedDir(StorageSubdir.ARTWORK)
-        val file = File(dir, "${sanitizeFileName(trackId)}.jpg")
+        val sanitized = sanitizeFileName(trackId)
+        val safeBase = if (sanitized.length > 100) {
+            "${sanitized.take(72)}_${trackId.hashCode().toUInt()}"
+        } else {
+            sanitized
+        }
+        val file = File(dir, "$safeBase.jpg")
         runCatching {
             file.writeBytes(bytes)
             file.absolutePath
