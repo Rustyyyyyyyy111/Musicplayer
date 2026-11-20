@@ -24,7 +24,6 @@ jobs:
           if [ ! -f "app/google-services.json" ]; then
             echo '{"project_info": {"project_number": "123456789","project_id": "musicplayer-temp","storage_bucket": "musicplayer-temp.appspot.com"},"client": [{"client_info": {"mobilesdk_app_id": "1:123456789:android:123456789abcdef","android_client_info": {"package_name": "com.example.audio"}},"oauth_client": [],"services": {"analytics_service": {"status": "1"},"app_invite_service": {"status": "1"},"ads_service": {"status": "1"}}}],"api_version": "1"}' > app/google-services.json
           fi
-
           # 2. Tạo file debug.keystore để ký ứng dụng
           if [ ! -f "debug.keystore" ]; then
             echo "Đang tạo file debug.keystore..."
@@ -36,13 +35,13 @@ jobs:
           if [ -d "android" ]; then
             cd android
           fi
-          
+
           if [ ! -f "./gradlew" ]; then
             gradle wrapper
           fi
-          
+
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug -Pksp.incremental=false --no-daemon --stacktrace
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
