@@ -61,7 +61,6 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.rounded.OfflinePin
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,13 +69,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.laughing.musicplayer.ui.components.AppleAlertDialog
+import com.laughing.musicplayer.ui.components.AppleModalBottomSheet
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -597,9 +597,13 @@ fun NowPlayingSheet(
     }
 
     if (showQueueSheet) {
-        ModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
+        AppleModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
             Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                Text("Hàng đợi phát (${playback.queue.size} bài)", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Hàng đợi phát (${playback.queue.size} bài)",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = colors.textPrimary
+                )
                 Spacer(modifier = Modifier.height(10.dp))
                 LazyColumn(modifier = Modifier.height(340.dp)) {
                     itemsIndexed(playback.queue) { idx, item ->
@@ -619,9 +623,13 @@ fun NowPlayingSheet(
                                 Text(
                                     item.title,
                                     fontWeight = if (idx == playback.currentIndex) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (idx == playback.currentIndex) colors.accent else MaterialTheme.colorScheme.onSurface
+                                    color = if (idx == playback.currentIndex) colors.accent else colors.textPrimary
                                 )
-                                Text(item.artist, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    item.artist,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.textSecondary
+                                )
                             }
                         }
                     }
@@ -731,7 +739,7 @@ fun NowPlayingSheet(
 
     if (showLyricsSearchDialog) {
         var q by remember { mutableStateOf("${track.title} ${track.artist}") }
-        AlertDialog(
+        AppleAlertDialog(
             onDismissRequest = { showLyricsSearchDialog = false },
             title = { Text("Tìm kiếm lời bài hát (LRCLIB)") },
             text = {

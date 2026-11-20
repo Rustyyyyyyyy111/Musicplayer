@@ -159,6 +159,10 @@ class LocalMusicScannerRobolectricTest {
     @Test
     fun offlineTabAndSettingsOpenDualModeScannerSheet() {
         composeRule.waitForIdle()
+        if (composeRule.onAllNodes(hasTestTag("onboarding_later_btn")).fetchSemanticsNodes().isNotEmpty()) {
+            composeRule.onNodeWithTag("onboarding_later_btn").performClick()
+            composeRule.waitForIdle()
+        }
 
         // 1. From Library -> Offline empty state
         composeRule.onNodeWithTag("nav_library").performClick()

@@ -49,7 +49,6 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VpnLock
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -98,6 +97,7 @@ import com.laughing.musicplayer.core.model.ProxyType
 import com.laughing.musicplayer.core.model.TelegramChatType
 import com.laughing.musicplayer.core.model.ThemeMode
 import com.laughing.musicplayer.data.telegram.TelegramAuthUiState
+import com.laughing.musicplayer.ui.components.AppleAlertDialog
 import com.laughing.musicplayer.ui.components.AppleCard
 import com.laughing.musicplayer.ui.components.ArtworkImage
 import com.laughing.musicplayer.ui.components.rememberLocalMusicScannerLauncher
@@ -580,7 +580,7 @@ fun SettingsScreen(
 
     if (showCacheLimitDialog) {
         var customMb by remember { mutableStateOf("4096") }
-        AlertDialog(
+        AppleAlertDialog(
             onDismissRequest = { showCacheLimitDialog = false },
             title = { Text("Giới hạn bộ nhớ đệm (Cache)") },
             text = {
@@ -621,7 +621,7 @@ fun SettingsScreen(
         var user by remember { mutableStateOf(prefs.proxyConfig.username) }
         var pass by remember { mutableStateOf(prefs.proxyConfig.password) }
 
-        AlertDialog(
+        AppleAlertDialog(
             onDismissRequest = { showProxyDialog = false },
             title = { Text("Cấu hình Proxy") },
             text = {
@@ -676,7 +676,7 @@ fun SettingsScreen(
     }
 
     if (showVersionDialog) {
-        AlertDialog(
+        AppleAlertDialog(
             onDismissRequest = { showVersionDialog = false },
             title = { Text("Music Player v${BuildConfig.VERSION_NAME}") },
             text = {

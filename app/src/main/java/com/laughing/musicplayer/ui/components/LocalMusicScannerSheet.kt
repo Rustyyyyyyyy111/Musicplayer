@@ -28,7 +28,6 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.PermMedia
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,7 +35,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -109,11 +107,9 @@ fun rememberLocalMusicScannerLauncher(
 
     if (showScanSheet) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
+        AppleModalBottomSheet(
             onDismissRequest = { showScanSheet = false },
-            sheetState = sheetState,
-            containerColor = colors.cardSurface,
-            contentColor = colors.textPrimary
+            sheetState = sheetState
         ) {
             Column(
                 modifier = Modifier
@@ -187,7 +183,7 @@ fun rememberLocalMusicScannerLauncher(
             "Đọc bộ nhớ (READ_EXTERNAL_STORAGE)"
         }
 
-        AlertDialog(
+        AppleAlertDialog(
             onDismissRequest = { showRationaleDialog = false },
             modifier = Modifier.testTag("audio_permission_rationale_dialog"),
             icon = {
@@ -267,8 +263,8 @@ private fun ScanOptionCard(
             .fillMaxWidth()
             .testTag(testTag),
         shape = RoundedCornerShape(18.dp),
-        color = colors.elevatedSurface,
-        border = BorderStroke(0.6.dp, colors.divider)
+        color = colors.modalCardSurface,
+        border = BorderStroke(1.dp, colors.modalBorder)
     ) {
         Row(
             modifier = Modifier

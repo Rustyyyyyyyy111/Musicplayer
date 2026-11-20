@@ -46,7 +46,8 @@ data class UserPreferences(
     val floodWaitUntilEpochMs: Long = 0L,
     val lastTelegramAutoSyncEpochMs: Long = 0L,
     val sleepFadeOutEnabled: Boolean = true,
-    val scannedFolderUris: Set<String> = emptySet()
+    val scannedFolderUris: Set<String> = emptySet(),
+    val hasCompletedPermissionsOnboarding: Boolean = false
 )
 
 class SettingsDataStore(
@@ -84,6 +85,19 @@ class SettingsDataStore(
         val TG_LAST_AUTO_SYNC_MS = longPreferencesKey("tg_last_auto_sync_ms")
         val SLEEP_FADEOUT_ENABLED = booleanPreferencesKey("sleep_fadeout_enabled")
         val SCANNED_FOLDER_URIS = stringSetPreferencesKey("scanned_folder_uris")
+        val PERMISSIONS_ONBOARDING_COMPLETED = booleanPreferencesKey("permissions_onboarding_completed")
+    }
+
+    private val onboardingPrefs by lazy {
+        context.getSharedPreferences("music_onboarding_prefs", Context.MODE_PRIVATE)
+    }
+
+    fun isPermissionsOnboardingCompletedSync(): Boolean {
+        return onboardingPrefs.getBoolean("permissions_onboarding_completed", false)
+    }
+
+    fun markPermissionsOnboardingCompletedSync(completed: Boolean = true) {
+        onboardingPrefs.edit().putBoolean("permissions_onboarding_completed", completed).apply()
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.musicPrefsDataStore.data.map { prefs ->
@@ -135,7 +149,9 @@ class SettingsDataStore(
             floodWaitUntilEpochMs = prefs[Keys.TG_FLOOD_WAIT_UNTIL_MS] ?: 0L,
             lastTelegramAutoSyncEpochMs = prefs[Keys.TG_LAST_AUTO_SYNC_MS] ?: 0L,
             sleepFadeOutEnabled = prefs[Keys.SLEEP_FADEOUT_ENABLED] ?: true,
-            scannedFolderUris = prefs[Keys.SCANNED_FOLDER_URIS] ?: emptySet()
+            scannedFolderUris = prefs[Keys.SCANNED_FOLDER_URIS] ?: emptySet(),
+            hasCompletedPermissionsOnboarding = prefs[Keys.PERMISSIONS_ONBOARDING_COMPLETED]
+                ?: isPermissionsOnboardingCompletedSync()
         )
     }
 
@@ -248,6 +264,13 @@ class SettingsDataStore(
         context.musicPrefsDataStore.edit { prefs ->
             val current = prefs[Keys.SCANNED_FOLDER_URIS] ?: emptySet()
             prefs[Keys.SCANNED_FOLDER_URIS] = current - uri
+        }
+    }
+
+    suspend fun setPermissionsOnboardingCompleted(completed: Boolean) {
+        markPermissionsOnboardingCompletedSync(completed)
+        context.musicPrefsDataStore.edit {
+            it[Keys.PERMISSIONS_ONBOARDING_COMPLETED] = completed
         }
     }
 }

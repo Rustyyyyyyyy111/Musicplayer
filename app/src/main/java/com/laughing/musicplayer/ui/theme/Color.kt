@@ -30,6 +30,10 @@ val LiquidGlassCard = Color(0x2EFFFFFF)
 val LiquidGlassCardDark = Color(0x5216161C)
 val LiquidGlassBorder = Color(0x3DFFFFFF)
 val LiquidGlassNavSurface = Color(0x47121218)
+val LiquidGlassModalSurface = Color(0xFF1C1C1E).copy(alpha = 0.92f)
+val LiquidGlassModalCardSurface = Color(0xFF28282E)
+val LiquidGlassModalBorder = Color.White.copy(alpha = 0.15f)
+val LiquidGlassModalScrim = Color.Black.copy(alpha = 0.68f)
 
 // Semantic Status Colors
 val StatusSuccess = Color(0xFF30D158)

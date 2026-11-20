@@ -240,6 +240,11 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _hasAllFilesAccess = MutableStateFlow(false)
     val hasAllFilesAccess: StateFlow<Boolean> = _hasAllFilesAccess.asStateFlow()
 
+    private val _permissionsOnboardingCompleted = MutableStateFlow(
+        container.settingsDataStore.isPermissionsOnboardingCompletedSync()
+    )
+    val permissionsOnboardingCompleted: StateFlow<Boolean> = _permissionsOnboardingCompleted.asStateFlow()
+
     private val _liquidGlassPalette = MutableStateFlow(LiquidGlassPalette())
     val liquidGlassPalette: StateFlow<LiquidGlassPalette> = _liquidGlassPalette.asStateFlow()
 
@@ -831,6 +836,18 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun hasAllFilesAccessPermission(): Boolean = container.storageManager.hasAllFilesAccessPermission()
     fun buildAllFilesAccessIntent(): Intent = container.storageManager.buildManageAllFilesAccessIntent()
     fun getUnifiedDownloadDisplayPath(): String = container.storageManager.getDisplayRootPath()
+
+    fun refreshPermissionStates() {
+        _hasAllFilesAccess.value = container.storageManager.hasAllFilesAccessPermission()
+    }
+
+    fun markPermissionsOnboardingCompleted() {
+        container.settingsDataStore.markPermissionsOnboardingCompletedSync(true)
+        _permissionsOnboardingCompleted.value = true
+        viewModelScope.launch {
+            container.settingsDataStore.setPermissionsOnboardingCompleted(true)
+        }
+    }
 
     // Offline / Local Music Scanner
     fun indexOfflineLibrary() = scanEntireDevice()

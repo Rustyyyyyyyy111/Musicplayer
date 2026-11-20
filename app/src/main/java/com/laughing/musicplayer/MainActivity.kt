@@ -1,15 +1,10 @@
 package com.laughing.musicplayer
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -61,10 +56,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -79,6 +72,7 @@ import com.laughing.musicplayer.core.model.UnifiedSearchTab
 import com.laughing.musicplayer.data.youtube.YouTubeCollectionResult
 import com.laughing.musicplayer.data.youtube.YouTubeSearchTab
 import com.laughing.musicplayer.ui.components.AppleMusicSurfaceBackground
+import com.laughing.musicplayer.ui.components.FirstLaunchPermissionsDialog
 import com.laughing.musicplayer.ui.components.FloatingMiniPlayer
 import com.laughing.musicplayer.ui.screens.ActivityLogsScreen
 import com.laughing.musicplayer.ui.screens.CarModeScreen
@@ -157,30 +151,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
-    val context = LocalContext.current
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
     val liquidPalette by viewModel.liquidGlassPalette.collectAsStateWithLifecycle()
     val liquidArtwork by viewModel.liquidGlassArtwork.collectAsStateWithLifecycle()
+    val permissionsOnboardingCompleted by viewModel.permissionsOnboardingCompleted.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
-
-    val notificationLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { }
-
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val granted = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!granted) {
-                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-    }
 
     LaunchedEffect(viewModel) {
         viewModel.toastEvents.collect { msg ->
@@ -593,6 +571,13 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                 }
                             )
                     )
+                    if (!permissionsOnboardingCompleted) {
+                        FirstLaunchPermissionsDialog(
+                            onDismissLater = { viewModel.markPermissionsOnboardingCompleted() },
+                            onCompleted = { viewModel.markPermissionsOnboardingCompleted() },
+                            onPermissionsRefreshed = { viewModel.refreshPermissionStates() }
+                        )
+                    }
                 }
             }
         }

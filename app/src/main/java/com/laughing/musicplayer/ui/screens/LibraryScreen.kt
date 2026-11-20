@@ -47,7 +47,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -89,6 +88,7 @@ import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.SmartPlaylistType
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.VietnameseTextNormalizer
+import com.laughing.musicplayer.ui.components.AppleAlertDialog
 import com.laughing.musicplayer.ui.components.AppleCard
 import com.laughing.musicplayer.ui.components.AppleMusicSegmentedSwitcher
 import com.laughing.musicplayer.ui.components.ArtworkImage
@@ -976,7 +976,7 @@ fun LibraryScreen(
 
     if (editingGenreTrack != null) {
         val targetTrack = editingGenreTrack!!
-        AlertDialog(
+        AppleAlertDialog(
             onDismissRequest = { editingGenreTrack = null },
             title = { Text("Chọn thể loại cho '${targetTrack.title}'") },
             text = {
@@ -1004,7 +1004,7 @@ fun LibraryScreen(
 
     if (showCreatePlaylistDialog) {
         var newName by remember { mutableStateOf("") }
-        AlertDialog(
+        AppleAlertDialog(
             onDismissRequest = { showCreatePlaylistDialog = false },
             title = { Text("Tạo Playlist mới") },
             text = {

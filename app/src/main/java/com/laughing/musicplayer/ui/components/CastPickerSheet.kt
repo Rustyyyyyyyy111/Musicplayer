@@ -31,7 +31,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -60,10 +59,8 @@ fun CastPickerSheet(
 ) {
     val colors = LocalMusicPlayerColors.current
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = colors.groupedSurface,
-        contentColor = colors.textPrimary
+    AppleModalBottomSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -148,8 +145,8 @@ fun CastPickerSheet(
 
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = colors.cardSurface,
-                border = BorderStroke(0.75.dp, colors.divider),
+                color = colors.modalCardSurface,
+                border = BorderStroke(1.dp, colors.modalBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 if (castState.castRoutes.isEmpty()) {
@@ -248,8 +245,8 @@ fun CastPickerSheet(
 
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = colors.cardSurface,
-                border = BorderStroke(0.75.dp, colors.divider),
+                color = colors.modalCardSurface,
+                border = BorderStroke(1.dp, colors.modalBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {

@@ -41,7 +41,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -100,10 +99,8 @@ fun NowPlayingMoreSheet(
 
     val isEditableOffline = track.source == MusicSource.OFFLINE || !track.localPath.isNullOrBlank()
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = colors.groupedSurface,
-        contentColor = colors.textPrimary
+    AppleModalBottomSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -115,8 +112,8 @@ fun NowPlayingMoreSheet(
             // Track summary header
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = colors.cardSurface,
-                border = BorderStroke(0.75.dp, colors.divider),
+                color = colors.modalCardSurface,
+                border = BorderStroke(1.dp, colors.modalBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -155,8 +152,8 @@ fun NowPlayingMoreSheet(
             // Grouped menu actions
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = colors.cardSurface,
-                border = BorderStroke(0.75.dp, colors.divider),
+                color = colors.modalCardSurface,
+                border = BorderStroke(1.dp, colors.modalBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -272,10 +269,8 @@ fun SleepTimerAppleSheet(
     var customInputText by remember { mutableStateOf("25") }
     var trackCountText by remember { mutableStateOf("3") }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = colors.groupedSurface,
-        contentColor = colors.textPrimary
+    AppleModalBottomSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -363,8 +358,8 @@ fun SleepTimerAppleSheet(
             // Quick preset pills
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = colors.cardSurface,
-                border = BorderStroke(0.75.dp, colors.divider),
+                color = colors.modalCardSurface,
+                border = BorderStroke(1.dp, colors.modalBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -391,7 +386,7 @@ fun SleepTimerAppleSheet(
                                 },
                                 label = { Text(label, fontWeight = FontWeight.Medium) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    containerColor = colors.elevatedSurface,
+                                    containerColor = colors.modalCardSurface,
                                     labelColor = colors.textPrimary
                                 ),
                                 modifier = Modifier
@@ -423,8 +418,8 @@ fun SleepTimerAppleSheet(
             // Custom minutes stepper + input
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = colors.cardSurface,
-                border = BorderStroke(0.75.dp, colors.divider),
+                color = colors.modalCardSurface,
+                border = BorderStroke(1.dp, colors.modalBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -539,10 +534,8 @@ fun TrackInfoSheet(
 ) {
     val colors = LocalMusicPlayerColors.current
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = colors.groupedSurface,
-        contentColor = colors.textPrimary
+    AppleModalBottomSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -696,10 +689,8 @@ fun SleepModeSheet(
 ) {
     val colors = LocalMusicPlayerColors.current
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = colors.groupedSurface,
-        contentColor = colors.textPrimary
+    AppleModalBottomSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -731,8 +722,8 @@ fun SleepModeSheet(
 
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = colors.cardSurface,
-                border = BorderStroke(0.75.dp, colors.divider),
+                color = colors.modalCardSurface,
+                border = BorderStroke(1.dp, colors.modalBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -875,10 +866,8 @@ fun EditTagsSheet(
     var yearText by remember(track.id) { mutableStateOf(track.releaseYear?.toString().orEmpty()) }
     var selectedGenre by remember(track.id) { mutableStateOf(track.genre) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = colors.groupedSurface,
-        contentColor = colors.textPrimary
+    AppleModalBottomSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier

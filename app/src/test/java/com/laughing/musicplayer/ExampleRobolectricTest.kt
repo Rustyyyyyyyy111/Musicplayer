@@ -66,9 +66,20 @@ class ExampleRobolectricTest {
         assertEquals("com.laughing.musicplayer", context.packageName)
     }
 
+    private fun dismissOnboardingIfShown() {
+        composeRule.waitForIdle()
+        val hasLaterBtn = composeRule.onAllNodes(hasTestTag("onboarding_later_btn"))
+            .fetchSemanticsNodes()
+            .isNotEmpty()
+        if (hasLaterBtn) {
+            composeRule.onNodeWithTag("onboarding_later_btn").performClick()
+            composeRule.waitForIdle()
+        }
+    }
+
     @Test
     fun listenNowScreenIsCleanAndNavigationWorks() {
-        composeRule.waitForIdle()
+        dismissOnboardingIfShown()
         // Home screen keeps Listen Now & discovery only (no AI Smart Mix or Telegram setup card)
         composeRule.onNodeWithTag("listen_now_screen").assertIsDisplayed()
         composeRule.onNodeWithText("AI Smart Mix").assertDoesNotExist()
@@ -108,7 +119,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun settingsScreenDisplaysConsolidatedSourcesYouTubeLoginCrossfadeAndRemovesScrobbleAndUpdate() {
-        composeRule.waitForIdle()
+        dismissOnboardingIfShown()
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_screen").assertIsDisplayed()
@@ -220,7 +231,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun telegramAuthScreenOpensFromSettingsAndShowsPhoneAndCodeSteps() {
-        composeRule.waitForIdle()
+        dismissOnboardingIfShown()
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_tg_login"))
@@ -351,7 +362,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun unifiedSearchTabsAndSmartPlaylistsUiAreInteractive() {
-        composeRule.waitForIdle()
+        dismissOnboardingIfShown()
         // 1. Unified Search Tabs
         composeRule.onNodeWithTag("nav_search").performClick()
         composeRule.waitForIdle()
@@ -551,7 +562,7 @@ class ExampleRobolectricTest {
             )
         }
 
-        composeRule.waitForIdle()
+        dismissOnboardingIfShown()
         // 1. Explore feed & Mood chips when Search tab is opened with empty input
         composeRule.onNodeWithTag("nav_search").performClick()
         composeRule.waitForIdle()
@@ -925,7 +936,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun telegramSourcePickerRendersSelectAllAndDeselectOnSingleHorizontalLine() {
-        composeRule.waitForIdle()
+        dismissOnboardingIfShown()
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_screen").performScrollToNode(hasTestTag("setting_tg_sources"))
@@ -1482,7 +1493,7 @@ class ExampleRobolectricTest {
         assertFalse(container.playerController.playbackState.value.isBuffering)
         assertFalse(container.playerController.playbackState.value.isPlaying)
 
-        composeRule.waitForIdle()
+        dismissOnboardingIfShown()
         // 1. Library Telegram tab must NOT show removed Public Channel filter chips
         composeRule.onNodeWithTag("nav_library").performClick()
         composeRule.waitForIdle()
