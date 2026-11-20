@@ -13,8 +13,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.ExperimentalSharedTransitionApi
-import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -222,14 +220,11 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
 
         val reducedMotion = rememberReducedMotionEnabled()
 
-        @OptIn(ExperimentalSharedTransitionApi::class)
         AppleMusicSurfaceBackground(
             artworkUri = playback.currentTrack?.artworkUri,
             blurredArtwork = liquidArtwork
         ) {
-            SharedTransitionLayout {
-                val sharedTransitionScope = this
-                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val useNavRail = maxWidth >= 600.dp && !isCarMode
 
                     Row(modifier = Modifier.fillMaxSize()) {
@@ -306,17 +301,6 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                             }
                                         ) {
                                             val currentTrack = playback.currentTrack
-                                            val miniArtMod = if (currentTrack != null && !reducedMotion) {
-                                                with(sharedTransitionScope) {
-                                                    Modifier.sharedBounds(
-                                                        sharedContentState = rememberSharedContentState(
-                                                            key = "player_artwork_${currentTrack.id}"
-                                                        ),
-                                                        animatedVisibilityScope = this@AnimatedVisibility,
-                                                        boundsTransform = { _, _ -> AppleMotion.mediaSpec(false) }
-                                                    )
-                                                }
-                                            } else Modifier
                                             MiniPlayerProgressHost(
                                                 viewModel = viewModel,
                                                 track = currentTrack,
@@ -324,7 +308,7 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                                 isBuffering = playback.isBuffering,
                                                 fallbackDurationMs = playback.durationMs,
                                                 onTap = { showNowPlaying = true },
-                                                artworkModifier = miniArtMod,
+                                                artworkModifier = Modifier,
                                                 modifier = Modifier
                                                     .widthIn(max = 680.dp)
                                                     .padding(bottom = if (useNavRail) 12.dp else 8.dp)
@@ -585,17 +569,6 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                         }
                     ) {
                         val currentTrack = playback.currentTrack
-                        val sheetArtMod = if (currentTrack != null && !reducedMotion) {
-                            with(sharedTransitionScope) {
-                                Modifier.sharedBounds(
-                                    sharedContentState = rememberSharedContentState(
-                                        key = "player_artwork_${currentTrack.id}"
-                                    ),
-                                    animatedVisibilityScope = this@AnimatedVisibility,
-                                    boundsTransform = { _, _ -> AppleMotion.mediaSpec(false) }
-                                )
-                            }
-                        } else Modifier
                         NowPlayingSheet(
                             viewModel = viewModel,
                             onDismiss = { showNowPlaying = false },
@@ -603,7 +576,7 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
                                 showNowPlaying = false
                                 navController.navigate(EqualizerRoute)
                             },
-                            artworkSharedModifier = sheetArtMod
+                            artworkSharedModifier = Modifier
                         )
                     }
 
@@ -624,7 +597,6 @@ fun MusicPlayerRoot(viewModel: MusicPlayerViewModel) {
             }
         }
     }
-}
 
 @Composable
 private fun MiniPlayerProgressHost(
