@@ -16,6 +16,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.Request
@@ -90,8 +92,23 @@ class YouTubeMusicRepository(
     private val trackDao: TrackDao,
     private val logger: ActivityLogger
 ) {
+    private data class CachedRelatedBatch(
+        val tracks: List<Track>,
+        val fetchedAtMs: Long
+    )
+
     @Volatile
     private var initialized = false
+
+    private val relatedCacheLock = Any()
+    private val relatedCache = object : LinkedHashMap<String, CachedRelatedBatch>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedRelatedBatch>?): Boolean {
+            return size > MAX_RELATED_CACHE_ENTRIES
+        }
+    }
+    private val relatedFetchMutex = Mutex()
+    @Volatile
+    private var lastDiscoveryRequestAtMs = 0L
 
     private fun ensureInitialized() {
         if (initialized) return
@@ -160,12 +177,11 @@ class YouTubeMusicRepository(
                     val raw = runInterruptible {
                         executeSearchInternal(
                             query = query.trim(),
-                            tab = tab,
-                            applyDurationFilter = true
+                            tab = tab
                         )
                     }
                     val mergedTracks = mergeAndPersistTracks(raw.tracks)
-                    logger.log("YOUTUBE", "INFO", "Tìm kiếm YouTube '$query' (${tab.labelVi}): ${mergedTracks.size} bài (60s-900s), ${raw.collections.size} bộ sưu tập")
+                    logger.log("YOUTUBE", "INFO", "Tìm kiếm YouTube '$query' (${tab.labelVi}): ${mergedTracks.size} bài, ${raw.collections.size} bộ sưu tập")
                     Result.success(YouTubeSearchResult(tracks = mergedTracks, collections = raw.collections))
                 }
             } catch (_: TimeoutCancellationException) {
@@ -399,7 +415,7 @@ class YouTubeMusicRepository(
     private fun executeSearchInternal(
         query: String,
         tab: YouTubeSearchTab,
-        applyDurationFilter: Boolean = true
+        @Suppress("UNUSED_PARAMETER") applyDurationFilter: Boolean = false
     ): YouTubeSearchResult {
         val extractor = ServiceList.YouTube.getSearchExtractor(
             query,
@@ -415,8 +431,7 @@ class YouTubeMusicRepository(
         items.forEach { item ->
             when (item) {
                 is StreamInfoItem -> {
-                    // Strictly keep only 60s..900s videos on Search to exclude Shorts and long podcasts
-                    if (!applyDurationFilter || isSearchDurationWithinMusicBounds(item.duration)) {
+                    if (isPlayableSearchStreamItem(item)) {
                         tracks += mapStreamItemToTrack(item, albumName = "YouTube")
                     }
                 }
@@ -555,6 +570,20 @@ class YouTubeMusicRepository(
                     val artworkUrl = runCatching {
                         streamExtractor.thumbnails.maxByOrNull { it.width }?.url
                     }.getOrNull()
+                    val videoId = extractVideoId(fullUrl)
+                    val relatedRaw = runCatching {
+                        streamExtractor.relatedItems?.items
+                            ?.filterIsInstance<StreamInfoItem>()
+                            .orEmpty()
+                            .filter { isPlayableSearchStreamItem(it) }
+                            .map { mapStreamItemToTrack(it, albumName = "YouTube Radio") }
+                            .filter { it.youtubeVideoId != videoId && it.id != "yt_$videoId" }
+                            .distinctBy { "${it.title.lowercase()}|${it.artist.lowercase()}" }
+                            .take(20)
+                    }.getOrDefault(emptyList())
+                    if (relatedRaw.isNotEmpty() && videoId.isNotBlank()) {
+                        putRelatedCache(videoId, relatedRaw)
+                    }
 
                     logger.log(
                         "YOUTUBE",
@@ -569,7 +598,8 @@ class YouTubeMusicRepository(
                             sampleRateHz = sampleRateHz,
                             mimeType = mime.ifBlank { if (isOpus) "audio/webm" else "audio/mp4" },
                             durationMs = durationSeconds * 1000L,
-                            artworkUrl = artworkUrl
+                            artworkUrl = artworkUrl,
+                            relatedTracks = relatedRaw
                         )
                     )
                 }
@@ -627,18 +657,219 @@ class YouTubeMusicRepository(
         return match?.groupValues?.getOrNull(1) ?: url.substringAfterLast('/').substringBefore('?')
     }
 
+    fun getCachedRelatedTracks(videoId: String): List<Track>? {
+        if (videoId.isBlank()) return null
+        val now = System.currentTimeMillis()
+        synchronized(relatedCacheLock) {
+            val entry = relatedCache[videoId] ?: return null
+            if (now - entry.fetchedAtMs > RELATED_CACHE_TTL_MS) {
+                relatedCache.remove(videoId)
+                return null
+            }
+            return entry.tracks
+        }
+    }
+
+    private fun putRelatedCache(videoId: String, tracks: List<Track>) {
+        if (videoId.isBlank() || tracks.isEmpty()) return
+        synchronized(relatedCacheLock) {
+            relatedCache[videoId] = CachedRelatedBatch(
+                tracks = tracks,
+                fetchedAtMs = System.currentTimeMillis()
+            )
+        }
+    }
+
+    private suspend fun enforceAntiBanSpacing() {
+        val elapsed = System.currentTimeMillis() - lastDiscoveryRequestAtMs
+        if (elapsed in 0 until MIN_ANTI_BAN_INTERVAL_MS) {
+            delay(MIN_ANTI_BAN_INTERVAL_MS - elapsed)
+        }
+        lastDiscoveryRequestAtMs = System.currentTimeMillis()
+    }
+
+    /**
+     * Fetches related / Up Next recommendations for a YouTube track using:
+     * 1) In-memory TTL cache (populated automatically during playback stream extraction)
+     * 2) StreamExtractor.relatedItems under an anti-ban spacing lock
+     * 3) Artist/keyword search fallback if relatedItems is empty or too small
+     */
+    suspend fun fetchRelatedTracks(
+        seedTrack: Track,
+        excludeIds: Set<String> = emptySet(),
+        limit: Int = 15
+    ): Result<List<Track>> = withContext(Dispatchers.IO) {
+        val videoId = (seedTrack.youtubeVideoId ?: seedTrack.streamUri?.let(::extractVideoId)).orEmpty()
+        val normalizedSeedSig = "${seedTrack.title.trim().lowercase()}|${seedTrack.artist.trim().lowercase()}"
+
+        fun filterAndCap(candidates: List<Track>): List<Track> {
+            val seenSigs = hashSetOf(normalizedSeedSig)
+            return candidates.filter { item ->
+                if (item.id == seedTrack.id || item.id in excludeIds) return@filter false
+                if (videoId.isNotBlank() && item.youtubeVideoId == videoId) return@filter false
+                val sig = "${item.title.trim().lowercase()}|${item.artist.trim().lowercase()}"
+                seenSigs.add(sig)
+            }.take(limit)
+        }
+
+        val cached = getCachedRelatedTracks(videoId)
+        if (!cached.isNullOrEmpty()) {
+            val filtered = filterAndCap(cached)
+            if (filtered.isNotEmpty()) {
+                val persisted = mergeAndPersistTracks(filtered)
+                return@withContext Result.success(persisted)
+            }
+        }
+
+        relatedFetchMutex.withLock {
+            // Re-check cache after waiting on mutex (covers concurrent stream resolution)
+            val rechecked = getCachedRelatedTracks(videoId)
+            if (!rechecked.isNullOrEmpty()) {
+                val filtered = filterAndCap(rechecked)
+                if (filtered.isNotEmpty()) {
+                    val persisted = mergeAndPersistTracks(filtered)
+                    return@withContext Result.success(persisted)
+                }
+            }
+
+            try {
+                withTimeout(STREAM_FETCH_TIMEOUT_MS) {
+                    proxyManager.refreshHttpClient()
+                    ensureInitialized()
+                    enforceAntiBanSpacing()
+
+                    val extractedRelated = if (videoId.isNotBlank()) {
+                        runCatching {
+                            val fullUrl = "https://www.youtube.com/watch?v=$videoId"
+                            val extractor = ServiceList.YouTube.getStreamExtractor(fullUrl)
+                            runInterruptible { extractor.fetchPage() }
+                            extractor.relatedItems?.items
+                                ?.filterIsInstance<StreamInfoItem>()
+                                .orEmpty()
+                                .filter { isPlayableSearchStreamItem(it) }
+                                .map { mapStreamItemToTrack(it, albumName = "YouTube Radio") }
+                        }.getOrDefault(emptyList())
+                    } else {
+                        emptyList()
+                    }
+
+                    val combined = if (extractedRelated.size >= 5) {
+                        extractedRelated
+                    } else {
+                        val fallbackQuery = buildRelatedSearchQuery(seedTrack)
+                        val fallbackTracks = if (fallbackQuery.isNotBlank()) {
+                            enforceAntiBanSpacing()
+                            runCatching {
+                                runInterruptible {
+                                    executeSearchInternal(
+                                        query = fallbackQuery,
+                                        tab = YouTubeSearchTab.VIDEOS
+                                    ).tracks
+                                }
+                            }.getOrDefault(emptyList())
+                        } else {
+                            emptyList()
+                        }
+                        extractedRelated + fallbackTracks
+                    }
+
+                    if (videoId.isNotBlank() && combined.isNotEmpty()) {
+                        putRelatedCache(videoId, combined.distinctBy { it.id }.take(25))
+                    }
+                    val ready = filterAndCap(combined)
+                    val persisted = mergeAndPersistTracks(ready)
+                    logger.log(
+                        "YOUTUBE_RADIO",
+                        "INFO",
+                        "Up Next cho '${seedTrack.title}': tìm thấy ${persisted.size} bài gợi ý"
+                    )
+                    Result.success(persisted)
+                }
+            } catch (err: Exception) {
+                if (err is kotlinx.coroutines.CancellationException) throw err
+                logger.log("YOUTUBE_RADIO", "WARN", "Không thể tải Up Next cho '${seedTrack.title}': ${err.message}")
+                Result.failure(err)
+            }
+        }
+    }
+
+    /**
+     * Lightweight, failure-tolerant YouTube discovery search used by the AI Smart Playlist engine
+     * to blend ~30% fresh tracks when online while working seamlessly offline.
+     */
+    suspend fun searchDiscoveryTracks(
+        queries: List<String>,
+        excludeIds: Set<String>,
+        maxTracks: Int = 6
+    ): List<Track> = withContext(Dispatchers.IO) {
+        if (queries.isEmpty() || maxTracks <= 0) return@withContext emptyList()
+        relatedFetchMutex.withLock {
+            val collected = mutableListOf<Track>()
+            val seenIds = excludeIds.toMutableSet()
+            runCatching {
+                withTimeout(DISCOVERY_SEARCH_TIMEOUT_MS) {
+                    proxyManager.refreshHttpClient()
+                    ensureInitialized()
+                    for (query in queries.distinct().take(2)) {
+                        if (collected.size >= maxTracks) break
+                        if (query.isBlank()) continue
+                        enforceAntiBanSpacing()
+                        val raw = runCatching {
+                            runInterruptible {
+                                executeSearchInternal(query = query, tab = YouTubeSearchTab.VIDEOS).tracks
+                            }
+                        }.getOrDefault(emptyList())
+                        raw.forEach { candidate ->
+                            if (collected.size < maxTracks && seenIds.add(candidate.id)) {
+                                collected += candidate
+                            }
+                        }
+                    }
+                }
+            }
+            if (collected.isNotEmpty()) {
+                runCatching { mergeAndPersistTracks(collected) }.getOrDefault(collected)
+            } else {
+                emptyList()
+            }
+        }
+    }
+
     companion object {
         const val STREAM_FETCH_TIMEOUT_MS = 7_500L
         const val FEED_TIMEOUT_MS = 8_000L
-        const val MIN_SEARCH_DURATION_SECONDS = 60L
-        const val MAX_SEARCH_DURATION_SECONDS = 900L
+        const val DISCOVERY_SEARCH_TIMEOUT_MS = 4_800L
+        const val MIN_ANTI_BAN_INTERVAL_MS = 1_200L
+        const val RELATED_CACHE_TTL_MS = 30L * 60L * 1000L
+        const val MAX_RELATED_CACHE_ENTRIES = 48
 
-        internal fun isSearchDurationWithinMusicBounds(durationSeconds: Long): Boolean {
-            return durationSeconds in MIN_SEARCH_DURATION_SECONDS..MAX_SEARCH_DURATION_SECONDS
+        internal fun isPlayableSearchStreamItem(item: StreamInfoItem): Boolean {
+            return !item.url.isNullOrBlank()
         }
 
         internal fun filterSearchStreamItems(items: List<StreamInfoItem>): List<StreamInfoItem> {
-            return items.filter { isSearchDurationWithinMusicBounds(it.duration) }
+            return items.filter { isPlayableSearchStreamItem(it) }
+        }
+
+        internal fun buildRelatedSearchQuery(track: Track): String {
+            val cleanArtist = track.artist
+                .replace(Regex("(?i)\\s*-\\s*topic$"), "")
+                .replace(Regex("(?i)official|vevo|channel"), "")
+                .trim()
+                .takeIf { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
+            val cleanTitleWords = track.title
+                .replace(Regex("\\[[^\\]]*]|\\([^)]*\\)"), " ")
+                .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
+                .split(Regex("\\s+"))
+                .filter { it.length >= 2 }
+                .take(4)
+                .joinToString(" ")
+            return when {
+                !cleanArtist.isNullOrBlank() && cleanTitleWords.isNotBlank() -> "$cleanArtist $cleanTitleWords mix"
+                !cleanArtist.isNullOrBlank() -> "$cleanArtist playlist"
+                cleanTitleWords.isNotBlank() -> "$cleanTitleWords music mix"
+                else -> "Nhạc hay tuyển chọn"
+            }
         }
 
         internal fun isOpusStreamCandidate(
@@ -704,5 +935,6 @@ data class ResolvedYouTubeStream(
     val sampleRateHz: Int,
     val mimeType: String,
     val durationMs: Long,
-    val artworkUrl: String?
+    val artworkUrl: String?,
+    val relatedTracks: List<Track> = emptyList()
 )

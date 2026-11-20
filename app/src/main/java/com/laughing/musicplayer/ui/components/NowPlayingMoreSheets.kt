@@ -5,8 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,6 +14,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -253,7 +253,7 @@ private fun MoreMenuRow(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SleepTimerAppleSheet(
     playback: PlaybackState,
@@ -372,12 +372,11 @@ fun SleepTimerAppleSheet(
                         fontWeight = FontWeight.SemiBold,
                         color = colors.textPrimary
                     )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    val presets = listOf(15 to "15 phút", 30 to "30 phút", 45 to "45 phút", 60 to "1 tiếng")
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val presets = listOf(15 to "15 phút", 30 to "30 phút", 45 to "45 phút", 60 to "1 tiếng")
-                        presets.forEach { (minutes, label) ->
+                        items(presets, key = { it.first }) { (minutes, label) ->
                             FilterChip(
                                 selected = false,
                                 onClick = {
@@ -394,23 +393,25 @@ fun SleepTimerAppleSheet(
                                     .testTag("sleep_preset_${minutes}m")
                             )
                         }
-                        FilterChip(
-                            selected = playback.sleepTimerMode == SleepTimerMode.END_OF_CURRENT_TRACK,
-                            onClick = {
-                                onSelectEndOfTrack()
-                                onDismiss()
-                            },
-                            label = { Text("Hết bài hiện tại", fontWeight = FontWeight.Medium) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = colors.accent.copy(alpha = 0.2f),
-                                selectedLabelColor = colors.accent,
-                                containerColor = colors.elevatedSurface,
-                                labelColor = colors.textPrimary
-                            ),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .testTag("sleep_end_of_track_btn")
-                        )
+                        item(key = "end_of_track") {
+                            FilterChip(
+                                selected = playback.sleepTimerMode == SleepTimerMode.END_OF_CURRENT_TRACK,
+                                onClick = {
+                                    onSelectEndOfTrack()
+                                    onDismiss()
+                                },
+                                label = { Text("Hết bài hiện tại", fontWeight = FontWeight.Medium) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = colors.accent.copy(alpha = 0.2f),
+                                    selectedLabelColor = colors.accent,
+                                    containerColor = colors.elevatedSurface,
+                                    labelColor = colors.textPrimary
+                                ),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("sleep_end_of_track_btn")
+                            )
+                        }
                     }
                 }
             }

@@ -56,39 +56,54 @@ class YouTubeUpgradeRobolectricTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun standardYouTubeTabsAndSearchDurationFilterRejectShortsAndLongVideos() {
+    fun standardYouTubeTabsAndSearchResultsAllowAllPlayableDurations() {
         assertEquals("videos", YouTubeSearchTab.VIDEOS.filterKey)
         assertEquals("channels", YouTubeSearchTab.CHANNELS.filterKey)
         assertEquals("playlists", YouTubeSearchTab.PLAYLISTS.filterKey)
 
-        // Boundary checks: 60s..900s inclusive
-        assertFalse(YouTubeMusicRepository.isSearchDurationWithinMusicBounds(0L))
-        assertFalse(YouTubeMusicRepository.isSearchDurationWithinMusicBounds(59L))
-        assertTrue(YouTubeMusicRepository.isSearchDurationWithinMusicBounds(60L))
-        assertTrue(YouTubeMusicRepository.isSearchDurationWithinMusicBounds(245L))
-        assertTrue(YouTubeMusicRepository.isSearchDurationWithinMusicBounds(900L))
-        assertFalse(YouTubeMusicRepository.isSearchDurationWithinMusicBounds(901L))
-
-        val shortItem = StreamInfoItem(0, "https://youtube.com/watch?v=short1", "Short Clip", StreamType.VIDEO_STREAM).apply {
+        val liveItem = StreamInfoItem(0, "https://youtube.com/watch?v=live1", "Lofi Live Radio", StreamType.LIVE_STREAM).apply {
+            duration = -1L
+        }
+        val shortItem = StreamInfoItem(0, "https://youtube.com/watch?v=short1", "Short Clip 45s", StreamType.VIDEO_STREAM).apply {
             duration = 45L
         }
-        val minBoundaryItem = StreamInfoItem(0, "https://youtube.com/watch?v=ok60", "Lofi Track", StreamType.VIDEO_STREAM).apply {
-            duration = 60L
-        }
-        val remixItem = StreamInfoItem(0, "https://youtube.com/watch?v=ok240", "Cover Acoustic", StreamType.VIDEO_STREAM).apply {
+        val standardItem = StreamInfoItem(0, "https://youtube.com/watch?v=ok240", "Cover Acoustic", StreamType.VIDEO_STREAM).apply {
             duration = 240L
         }
-        val maxBoundaryItem = StreamInfoItem(0, "https://youtube.com/watch?v=ok900", "Live Session", StreamType.VIDEO_STREAM).apply {
-            duration = 900L
-        }
-        val podcastItem = StreamInfoItem(0, "https://youtube.com/watch?v=long1", "Podcast 2h", StreamType.VIDEO_STREAM).apply {
+        val djMixItem = StreamInfoItem(0, "https://youtube.com/watch?v=dj2h", "Vinahouse Nonstop DJ Mix 2h", StreamType.VIDEO_STREAM).apply {
             duration = 7_200L
+        }
+        val fullAlbumItem = StreamInfoItem(0, "https://youtube.com/watch?v=album90m", "Full Album Live Set 90m", StreamType.VIDEO_STREAM).apply {
+            duration = 5_400L
+        }
+        val invalidBlankUrl = StreamInfoItem(0, "", "Broken Entry", StreamType.VIDEO_STREAM).apply {
+            duration = 180L
         }
 
         val filtered = YouTubeMusicRepository.filterSearchStreamItems(
-            listOf(shortItem, minBoundaryItem, remixItem, maxBoundaryItem, podcastItem)
+            listOf(liveItem, shortItem, standardItem, djMixItem, fullAlbumItem, invalidBlankUrl)
         )
-        assertEquals(listOf("Lofi Track", "Cover Acoustic", "Live Session"), filtered.map { it.name })
+        assertEquals(
+            listOf("Lofi Live Radio", "Short Clip 45s", "Cover Acoustic", "Vinahouse Nonstop DJ Mix 2h", "Full Album Live Set 90m"),
+            filtered.map { it.name }
+        )
+
+        val query = YouTubeMusicRepository.buildRelatedSearchQuery(
+            Track(
+                id = "yt_demo",
+                title = "Chạy Ngay Đi (Official MV)",
+                artist = "Sơn Tùng M-TP - Topic",
+                album = "YouTube",
+                source = MusicSource.YOUTUBE_MUSIC,
+                durationMs = 240_000L,
+                format = AudioFormat.OPUS,
+                bitrateKbps = 160,
+                sampleRateHz = 48000,
+                bitDepth = null,
+                fileName = "demo.opus"
+            )
+        )
+        assertTrue(query.contains("Sơn Tùng M-TP"))
     }
 
     @Test

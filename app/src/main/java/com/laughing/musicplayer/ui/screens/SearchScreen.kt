@@ -530,7 +530,7 @@ fun SearchScreen(
                     if (searchState.youtubeTracks.isNotEmpty()) {
                         item(key = "header_youtube") {
                             SearchGroupHeader(
-                                title = "YouTube (1–15 phút)",
+                                title = "YouTube",
                                 count = searchState.youtubeTracks.size
                             )
                         }
@@ -540,6 +540,7 @@ fun SearchScreen(
                                 currentTrackId = playback.currentTrack?.id,
                                 queueContext = searchState.youtubeTracks,
                                 viewModel = viewModel,
+                                onPlayOverride = { viewModel.playYouTubeSearchRadio(track) },
                                 modifier = Modifier.animateItem()
                             )
                         }
@@ -771,12 +772,13 @@ private fun UnifiedTrackRow(
     currentTrackId: String?,
     queueContext: List<Track>,
     viewModel: MusicPlayerViewModel,
+    onPlayOverride: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     TrackRowItem(
         track = track,
         isCurrent = currentTrackId == track.id,
-        onPlay = { viewModel.playTrack(track, queueContext) },
+        onPlay = { onPlayOverride?.invoke() ?: viewModel.playTrack(track, queueContext) },
         onToggleFavorite = { viewModel.toggleFavorite(track) },
         onDownload = { viewModel.downloadTrack(track) },
         onAddToQueue = { viewModel.addToQueueNext(track) },

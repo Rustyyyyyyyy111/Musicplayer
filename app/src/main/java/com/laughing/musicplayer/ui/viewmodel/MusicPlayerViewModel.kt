@@ -3,6 +3,7 @@ package com.laughing.musicplayer.ui.viewmodel
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.webkit.CookieManager
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -54,6 +55,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -135,6 +137,19 @@ data class OfflineScanUiState(
     val currentTitle: String = "",
     val lastScannedCount: Int? = null,
     val lastSummaryMessage: String? = null
+)
+
+data class AiSmartPlaylistUiState(
+    val isGenerating: Boolean = false,
+    val hasGenerated: Boolean = false,
+    val mixTitle: String = "Mix Cá Nhân AI",
+    val mixSubtitle: String = "Đang phân tích lịch sử nghe nhạc của bạn...",
+    val timeBucketLabel: String = "Cá nhân hóa",
+    val topTags: List<String> = emptyList(),
+    val tracks: List<Track> = emptyList(),
+    val discoveryTrackIds: Set<String> = emptySet(),
+    val familiarCount: Int = 0,
+    val discoveryCount: Int = 0
 )
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -263,6 +278,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _youtubeState = MutableStateFlow(YouTubeUiState())
     val youtubeState: StateFlow<YouTubeUiState> = _youtubeState.asStateFlow()
 
+    private val _aiSmartPlaylistState = MutableStateFlow(AiSmartPlaylistUiState())
+    val aiSmartPlaylistState: StateFlow<AiSmartPlaylistUiState> = _aiSmartPlaylistState.asStateFlow()
+
     private val _searchQuery = MutableStateFlow("")
     private val _searchTab = MutableStateFlow(UnifiedSearchTab.ALL)
     private val _searchYouTubeSubTab = MutableStateFlow(YouTubeSearchTab.VIDEOS)
@@ -275,6 +293,14 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private var lyricsLoadJob: Job? = null
     private var lyricsSearchJob: Job? = null
     private var techInfoJob: Job? = null
+    private var aiSmartMixJob: Job? = null
+    private var generatedAiMixThisSession = false
+    private var aiSmartMixRefreshSeed = 0
+    private var youtubeRadioJob: Job? = null
+    @Volatile
+    private var youtubeRadioActive = false
+    @Volatile
+    private var youtubeRadioTopUpSeedId: String? = null
 
     @OptIn(FlowPreview::class)
     private val youtubeSearchTrigger: Flow<Pair<String, Int>> = merge(
@@ -457,6 +483,26 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     }
                 }
         }
+        viewModelScope.launch {
+            playbackState
+                .map { Triple(it.currentTrack?.id, it.currentIndex, it.queue.size) }
+                .distinctUntilChanged()
+                .collect { (_, currentIndex, queueSize) ->
+                    if (!youtubeRadioActive || currentIndex < 0 || queueSize <= 0) return@collect
+                    val current = playbackState.value.currentTrack ?: return@collect
+                    if (current.source != MusicSource.YOUTUBE_MUSIC) {
+                        youtubeRadioActive = false
+                        return@collect
+                    }
+                    val remainingAhead = queueSize - 1 - currentIndex
+                    if (remainingAhead <= 2) {
+                        val tailTrack = playbackState.value.queue.lastOrNull() ?: current
+                        if (youtubeRadioTopUpSeedId != tailTrack.id && youtubeRadioJob?.isActive != true) {
+                            topUpYouTubeRadioQueue(tailTrack, expectedPlayingId = current.id)
+                        }
+                    }
+                }
+        }
     }
 
     fun postToast(message: String) {
@@ -471,6 +517,124 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun onFirstFrameRendered() {
         container.onFirstFrameRendered()
         refreshStoragePermissions()
+        ensureAiSmartPlaylistForSession()
+    }
+
+    fun ensureAiSmartPlaylistForSession() {
+        val cur = _aiSmartPlaylistState.value
+        if (generatedAiMixThisSession && cur.tracks.isNotEmpty()) return
+        if (aiSmartMixJob?.isActive == true) return
+        generatedAiMixThisSession = true
+        generateAiSmartPlaylistInternal(refreshSeed = aiSmartMixRefreshSeed, isManual = false)
+    }
+
+    fun refreshAiSmartPlaylist(forceRefresh: Boolean = true) {
+        if (forceRefresh) {
+            aiSmartMixRefreshSeed += 1
+        }
+        generatedAiMixThisSession = true
+        generateAiSmartPlaylistInternal(refreshSeed = aiSmartMixRefreshSeed, isManual = forceRefresh)
+    }
+
+    private fun generateAiSmartPlaylistInternal(refreshSeed: Int, isManual: Boolean) {
+        aiSmartMixJob?.cancel()
+        aiSmartMixJob = viewModelScope.launch(Dispatchers.IO) {
+            _aiSmartPlaylistState.value = _aiSmartPlaylistState.value.copy(isGenerating = true)
+            val library = trackDao.getAllTracksOnce().map { it.toDomain() }
+            val snapshot = container.listeningBehaviorStore.getSnapshot()
+            val allowOnline = !isRobolectricEnv()
+            val result = container.aiSmartMixEngine.generatePersonalMix(
+                allTracks = library,
+                snapshot = snapshot,
+                refreshSeed = refreshSeed,
+                allowOnlineDiscovery = allowOnline
+            )
+            _aiSmartPlaylistState.value = AiSmartPlaylistUiState(
+                isGenerating = false,
+                hasGenerated = true,
+                mixTitle = result.mixTitle,
+                mixSubtitle = result.mixSubtitle,
+                timeBucketLabel = result.timeBucket.labelVi,
+                topTags = result.topTags,
+                tracks = result.tracks,
+                discoveryTrackIds = result.discoveryTrackIds,
+                familiarCount = result.familiarCount,
+                discoveryCount = result.discoveryCount
+            )
+            if (isManual && result.tracks.isNotEmpty()) {
+                postToast("Đã tạo lại Mix Cá Nhân AI (${result.tracks.size} bài)")
+            }
+        }
+    }
+
+    fun playAiSmartPlaylist(startIndex: Int = 0) {
+        val tracks = _aiSmartPlaylistState.value.tracks
+        if (tracks.isEmpty()) {
+            refreshAiSmartPlaylist(forceRefresh = true)
+            return
+        }
+        val safeIdx = startIndex.coerceIn(0, tracks.lastIndex)
+        playTrack(tracks[safeIdx], tracks)
+    }
+
+    fun playYouTubeSearchRadio(track: Track) {
+        youtubeRadioJob?.cancel()
+        youtubeRadioTopUpSeedId = null
+        youtubeRadioActive = true
+        container.playerController.playQueue(listOf(track), 0)
+
+        youtubeRadioJob = viewModelScope.launch(Dispatchers.IO) {
+            // Give resolveAudioStreamUrl a brief moment to populate relatedTracksCache without double-fetching
+            delay(450L)
+            val currentId = playbackState.value.currentTrack?.id
+            if (!youtubeRadioActive || (currentId != null && currentId != track.id)) return@launch
+            val existingIds = playbackState.value.queue.map { it.id }.toSet() + track.id
+            val related = container.youTubeMusicRepository.fetchRelatedTracks(
+                seedTrack = track,
+                excludeIds = existingIds,
+                limit = 15
+            ).getOrDefault(emptyList())
+
+            if (related.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    if (!youtubeRadioActive) return@withContext
+                    val added = container.playerController.appendTracksToQueue(
+                        tracks = related,
+                        expectedCurrentTrackId = track.id
+                    )
+                    if (added > 0) {
+                        postToast("Up Next Radio: đã thêm $added bài gợi ý")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun topUpYouTubeRadioQueue(seedTrack: Track, expectedPlayingId: String) {
+        youtubeRadioTopUpSeedId = seedTrack.id
+        youtubeRadioJob?.cancel()
+        youtubeRadioJob = viewModelScope.launch(Dispatchers.IO) {
+            val existingIds = playbackState.value.queue.map { it.id }.toSet()
+            val more = container.youTubeMusicRepository.fetchRelatedTracks(
+                seedTrack = seedTrack,
+                excludeIds = existingIds,
+                limit = 12
+            ).getOrDefault(emptyList())
+            if (more.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    if (!youtubeRadioActive) return@withContext
+                    container.playerController.appendTracksToQueue(
+                        tracks = more,
+                        expectedCurrentTrackId = expectedPlayingId
+                    )
+                }
+            }
+        }
+    }
+
+    private fun isRobolectricEnv(): Boolean {
+        return Build.FINGERPRINT.equals("robolectric", ignoreCase = true) ||
+            Build.HARDWARE.equals("robolectric", ignoreCase = true)
     }
 
     fun refreshStoragePermissions() {
@@ -572,6 +736,9 @@ class MusicPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun playTrack(track: Track, contextList: List<Track>? = null) {
+        youtubeRadioActive = false
+        youtubeRadioJob?.cancel()
+        youtubeRadioTopUpSeedId = null
         val normalizedTrack = normalizeTelegramTrackForPlayback(track)
         if (contextList != null && contextList.isNotEmpty()) {
             val normalizedList = contextList.map { normalizeTelegramTrackForPlayback(it) }

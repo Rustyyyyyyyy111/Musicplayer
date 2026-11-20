@@ -32,6 +32,7 @@ import com.laughing.musicplayer.core.model.SleepTimerMode
 import com.laughing.musicplayer.core.model.Track
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.ReplayGainExtractor
+import com.laughing.musicplayer.data.local.ListeningBehaviorStore
 import com.laughing.musicplayer.data.local.SettingsDataStore
 import com.laughing.musicplayer.data.local.TrackDao
 import com.laughing.musicplayer.data.storage.CacheManager
@@ -101,7 +102,8 @@ class DualPlayerCrossfadeController(
     private val playlistManager: PlaylistAndSmartMixManager,
     private val proxyManager: NetworkProxyManager,
     private val logger: ActivityLogger,
-    private val ioScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val ioScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val behaviorStore: ListeningBehaviorStore? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -207,6 +209,8 @@ class DualPlayerCrossfadeController(
     private val checkpointRestoreStarted = AtomicBoolean(false)
     private var lastSavedCheckpointTrackId: String? = null
     private var lastSavedCheckpointPosMs: Long = -1L
+    private var sessionTrackedId: String? = null
+    private var sessionOutcomeRecorded: Boolean = false
 
     init {
         attachListeners(playerA, isSlotA = true)
@@ -337,6 +341,10 @@ class DualPlayerCrossfadeController(
     fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
         if (tracks.isEmpty()) return
         val safeIdx = startIndex.coerceIn(0, tracks.lastIndex)
+        val outgoing = _playbackState.value.currentTrack
+        if (outgoing != null && outgoing.id != tracks[safeIdx].id) {
+            recordOutgoingTrackOutcome(forceCompleted = false)
+        }
         _playbackState.value = _playbackState.value.copy(
             queue = tracks,
             currentIndex = safeIdx,
@@ -361,6 +369,51 @@ class DualPlayerCrossfadeController(
         val insertPos = (state.currentIndex + 1).coerceIn(0, mutable.size)
         mutable.add(insertPos, track)
         _playbackState.value = state.copy(queue = mutable)
+    }
+
+    /**
+     * Smoothly appends Up Next recommendations to the active queue without interrupting current playback.
+     * Returns the count of newly added tracks.
+     */
+    fun appendTracksToQueue(
+        tracks: List<Track>,
+        expectedCurrentTrackId: String? = null
+    ): Int {
+        if (tracks.isEmpty()) return 0
+        val state = _playbackState.value
+        if (expectedCurrentTrackId != null && state.currentTrack?.id != expectedCurrentTrackId) {
+            return 0
+        }
+        val existingIds = state.queue.map { it.id }.toMutableSet()
+        val existingSigs = state.queue.map {
+            "${it.title.trim().lowercase()}|${it.artist.trim().lowercase()}"
+        }.toMutableSet()
+        val toAppend = tracks.filter { candidate ->
+            val sig = "${candidate.title.trim().lowercase()}|${candidate.artist.trim().lowercase()}"
+            existingIds.add(candidate.id) && existingSigs.add(sig)
+        }
+        if (toAppend.isEmpty()) return 0
+        _playbackState.value = state.copy(queue = state.queue + toAppend)
+        return toAppend.size
+    }
+
+    private fun recordOutgoingTrackOutcome(forceCompleted: Boolean) {
+        val track = _playbackState.value.currentTrack ?: return
+        if (sessionTrackedId == track.id && sessionOutcomeRecorded) return
+        val posMs = _playbackProgress.value.positionMs.coerceAtLeast(activePlayer.currentPosition.coerceAtLeast(0L))
+        val durMs = (_playbackProgress.value.durationMs.takeIf { it > 0L } ?: track.durationMs).coerceAtLeast(0L)
+        val completed = forceCompleted || (durMs > 0L && posMs >= (durMs * 0.70f))
+        val skippedEarly = !completed &&
+            posMs >= 2_000L &&
+            posMs < 30_000L &&
+            (durMs <= 0L || posMs < (durMs * 0.30f))
+        if (!completed && !skippedEarly) return
+        sessionTrackedId = track.id
+        sessionOutcomeRecorded = true
+        val store = behaviorStore ?: return
+        ioScope.launch {
+            store.recordTrackOutcome(track = track, completed = completed, skippedEarly = skippedEarly)
+        }
     }
 
     fun clearErrorMessage() {
@@ -442,6 +495,7 @@ class DualPlayerCrossfadeController(
     fun skipToNext() {
         val state = _playbackState.value
         if (state.queue.isEmpty()) return
+        recordOutgoingTrackOutcome(forceCompleted = false)
         val nextIdx = computeNextIndex(state, manualSkip = true)
         if (nextIdx != null) {
             _playbackState.value = state.copy(currentIndex = nextIdx)
@@ -473,6 +527,7 @@ class DualPlayerCrossfadeController(
             return
         }
         if (state.queue.isEmpty()) return
+        recordOutgoingTrackOutcome(forceCompleted = false)
         val prevIdx = if (state.currentIndex > 0) state.currentIndex - 1 else state.queue.lastIndex
         _playbackState.value = state.copy(currentIndex = prevIdx)
         playTrackInternal(state.queue[prevIdx], resetStandby = true)
@@ -669,6 +724,8 @@ class DualPlayerCrossfadeController(
         replayGainJob?.cancel()
         isCrossfading = false
         activeLoadAttempt = attempt
+        sessionTrackedId = track.id
+        sessionOutcomeRecorded = false
         if (resetStandby) {
             standbyIfAllocated()?.let { standby ->
                 standby.stop()
@@ -1046,6 +1103,7 @@ class DualPlayerCrossfadeController(
     }
 
     private fun handleTrackEnded() {
+        recordOutgoingTrackOutcome(forceCompleted = true)
         if (consumeTrackSleepTimerOnEnd()) return
         val state = _playbackState.value
         if (state.repeatMode == RepeatMode.ONE && state.currentTrack != null) {
@@ -1190,7 +1248,15 @@ class DualPlayerCrossfadeController(
             val prefs = settingsDataStore.preferencesFlow.first()
             applyTrackDspSettings(resolvedNextTrack, prefs.eqState)
             launchReplayGainProbeIfNeeded(resolvedNextTrack)
-            launch(Dispatchers.IO) { trackDao.markPlayed(resolvedNextTrack.id, System.currentTimeMillis()) }
+            val outgoingTrack = state.currentTrack
+            sessionTrackedId = resolvedNextTrack.id
+            sessionOutcomeRecorded = false
+            launch(Dispatchers.IO) {
+                if (outgoingTrack != null) {
+                    behaviorStore?.recordTrackOutcome(outgoingTrack, completed = true, skippedEarly = false)
+                }
+                trackDao.markPlayed(resolvedNextTrack.id, System.currentTimeMillis())
+            }
         }
     }
 

@@ -13,6 +13,7 @@ import com.laughing.musicplayer.audio.DualPlayerCrossfadeController
 import com.laughing.musicplayer.audio.MusicLibraryService
 import com.laughing.musicplayer.core.util.ActivityLogger
 import com.laughing.musicplayer.core.util.SecureCredentialStore
+import com.laughing.musicplayer.data.local.ListeningBehaviorStore
 import com.laughing.musicplayer.data.local.MusicPlayerDatabase
 import com.laughing.musicplayer.data.local.SettingsDataStore
 import com.laughing.musicplayer.data.storage.AudioTagEditor
@@ -29,6 +30,7 @@ import com.laughing.musicplayer.data.telegram.TelegramMusicRepository
 import com.laughing.musicplayer.data.youtube.YouTubeDownloadManager
 import com.laughing.musicplayer.data.youtube.YouTubeMusicRepository
 import com.laughing.musicplayer.data.youtube.YouTubeSessionCookieManager
+import com.laughing.musicplayer.integrations.AiSmartMixEngine
 import com.laughing.musicplayer.integrations.NetworkProxyManager
 import com.laughing.musicplayer.integrations.PlaylistAndSmartMixManager
 import com.laughing.musicplayer.lyrics.LyricsEngine
@@ -139,6 +141,9 @@ class AppContainer(context: Context) {
         activityLogger
     )
 
+    val listeningBehaviorStore = ListeningBehaviorStore(appContext)
+    val aiSmartMixEngine = AiSmartMixEngine(youTubeMusicRepository, activityLogger)
+
     val lyricsEngine = LyricsEngine(
         storageManager,
         { networkProxyManager.getHttpClient() },
@@ -156,7 +161,8 @@ class AppContainer(context: Context) {
         playlistAndSmartMixManager,
         networkProxyManager,
         activityLogger,
-        ioScope = appScope
+        ioScope = appScope,
+        behaviorStore = listeningBehaviorStore
     )
 
     val audioTagEditor = AudioTagEditor(
