@@ -114,8 +114,8 @@ import com.laughing.musicplayer.core.model.MusicSource
 import com.laughing.musicplayer.core.model.RepeatMode
 import com.laughing.musicplayer.core.model.SleepTimerMode
 import com.laughing.musicplayer.core.model.Track
+import com.laughing.musicplayer.core.model.LyricLine
 import com.laughing.musicplayer.data.storage.AudioTagEditResult
-import com.laughing.musicplayer.lyrics.LyricsLine
 import com.laughing.musicplayer.ui.components.ArtworkImage
 import com.laughing.musicplayer.ui.components.AudioQualityBadge
 import com.laughing.musicplayer.ui.components.CastPickerSheet
@@ -803,7 +803,7 @@ private fun NowPlayingStatusBadge(
 
 @Composable
 private fun NowPlayingLyricsBody(
-    lines: List<LyricsLine>,
+    lines: List<LyricLine>,
     lyricsState: LyricsUiState,
     progressFlow: StateFlow<PlaybackProgress>,
     accentColor: Color,
